@@ -3981,9 +3981,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
           pendingProgress = "";
           lastProgressAt = Date.now();
         };
-        const publishMidTurnNarration = async () => {
+        const publishMidTurnNarration = async (fitNarration = clampUserProgressMessage) => {
           const extracted = extractNarrationText(messageSegments, currentTextSegment);
-          const narration = clampUserProgressMessage(redactSecrets(extracted.text, runSecrets));
+          const narration = fitNarration(redactSecrets(extracted.text, runSecrets));
           messageSegments = extracted.remaining;
           currentTextSegment = "";
           if (!narration) return;
@@ -6711,6 +6711,26 @@ export function createRunExecutor(deps: ExecutorDeps) {
               const now = Date.now();
               if (!scripted && pendingProgress && now - lastProgressAt >= 250) {
                 await flushProgress();
+              }
+            } else if (event.type === "reply_complete") {
+              await flushProgress();
+              flushPendingTools();
+              await publishMidTurnNarration((text) => text.trim());
+            } else if (event.type === "reply_discarded") {
+              assembled = assembled.slice(0, assembled.length - currentTextSegment.length);
+              currentTextSegment = "";
+              pendingProgress = "";
+              progressRedactor = createStreamingRedactor(runSecrets);
+              if (hasStreamedText) {
+                await deps.events.append({
+                  spaceId: run.spaceId,
+                  threadId: thread.id,
+                  botId: bot.id,
+                  type: "thread.progress",
+                  runId,
+                  payload: { text: "", streaming: true },
+                });
+                hasStreamedText = false;
               }
             } else if (event.type === "progress") {
               toolCallStreak = { key: undefined, count: 0 };

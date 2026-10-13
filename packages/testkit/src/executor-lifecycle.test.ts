@@ -319,7 +319,7 @@ describeIntegration("run executor lifecycle", () => {
       }),
     ]);
     expect(continuation).toMatchObject({ status: "queued", trigger: "follow_up" });
-    expect(continuation.task.prompt).toBe("Respond to the user's steering context.");
+    expect(continuation.task.prompt).toBe("Keep it concise.");
     expect(steering).toHaveLength(2);
     expect(steering).toEqual(
       expect.arrayContaining([
@@ -396,7 +396,7 @@ describeIntegration("run executor lifecycle", () => {
     ).resolves.toMatchObject({
       status: "queued",
       trigger: "follow_up",
-      task: { prompt: "Respond to the user's steering context." },
+      task: { prompt: "Recover this context." },
     });
     await expect(
       handles.prisma.steeringMessage.findFirstOrThrow({ where: { botId: seeded.bot.id } }),

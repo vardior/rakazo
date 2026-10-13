@@ -1286,7 +1286,9 @@ export async function createPendingSteeringRun(
       botId: input.botId,
       threadId: input.threadId,
       userId: batch[0]!.userId,
-      prompt: "Respond to the user's steering context.",
+      prompt:
+        blocksToAgentHistoryText(source.message.blocks as MessageBlock[]) ||
+        "Respond to the user's steering context.",
       status: "queued",
     },
   });

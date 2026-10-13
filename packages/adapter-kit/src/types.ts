@@ -537,6 +537,8 @@ export interface ModelCallObserver {
 
 export type AgentRuntimeEvent =
   | { type: "text"; text: string }
+  | { type: "reply_complete" }
+  | { type: "reply_discarded" }
   | {
       type: "progress";
       text: string;

@@ -95,6 +95,7 @@ const MAX_PARALLEL_SUBAGENTS = 4;
 // instead of taking another assistant turn. A bounded internal follow-up keeps
 // that provider quirk from making a long task look complete after one step.
 const MAX_SILENT_TOOL_CONTINUATIONS = 3;
+const STEERING_POLL_MS = 1_000;
 const SILENT_TOOL_CONTINUATION_PROMPT =
   "Continue the original task from the latest tool result. Do not stop after a tool call; use any remaining tools needed, then give the user the final answer.";
 const SILENT_ALLOWED_TOOL_CONTINUATION_PROMPT =
@@ -264,13 +265,16 @@ export class PiAgentRuntime implements AgentRuntime {
         const seenSteeringIds: string[] = [];
         const initialSteering = request.claimSteering ? await request.claimSteering([]) : [];
         seenSteeringIds.push(...initialSteering.map((item) => item.id));
+        const steeringAfterPrompt = initialSteering.filter(
+          (item) => !isPromptOrEarlier(item, request.history, request.sourceMessageId),
+        );
         const history = toHistory(
-          withoutSteeringMessages(request.history, initialSteering),
+          withoutSteeringMessages(request.history, steeringAfterPrompt),
           request.prompt,
           request.sourceMessageId,
         );
-        const initialPrompt = initialSteering.length
-          ? `${request.prompt}\n\nAdditional user context:\n${initialSteering
+        const initialPrompt = steeringAfterPrompt.length
+          ? `${request.prompt}\n\nAdditional user context:\n${steeringAfterPrompt
               .map((item) => item.text)
               .join("\n")}`
           : request.prompt;
@@ -328,6 +332,84 @@ export class PiAgentRuntime implements AgentRuntime {
         const providerFailures = new WeakSet<AssistantMessage["content"]>();
         const hasBackups = Boolean(request.fallbackModels?.length);
         let agent: Agent;
+        let claiming: Promise<unknown> = Promise.resolve();
+        const claimNewSteering = () => {
+          const claimed = claiming.then(async () => {
+            if (!request.claimSteering) return [];
+            const steering = await request.claimSteering([...seenSteeringIds]);
+            seenSteeringIds.push(...steering.map((item) => item.id));
+            return steering;
+          });
+          claiming = claimed.catch(() => undefined);
+          return claimed;
+        };
+        let heldSteering: AgentSteeringMessage[] = [];
+        const takeSteering = async () => {
+          const claimed = await claimNewSteering();
+          const steering = [...heldSteering, ...claimed];
+          heldSteering = [];
+          return steering;
+        };
+        let interrupting = false;
+        let replyInterrupt = new AbortController();
+        const interruptibleReply = (options?: ModelsSimpleStreamOptions) => {
+          replyInterrupt = new AbortController();
+          return {
+            ...options,
+            signal: options?.signal
+              ? AbortSignal.any([options.signal, replyInterrupt.signal])
+              : replyInterrupt.signal,
+          };
+        };
+        let streamingReply = false;
+        let steeringPoll: ReturnType<typeof setInterval> | undefined;
+        const stopSteeringPoll = () => {
+          clearInterval(steeringPoll);
+          steeringPoll = undefined;
+        };
+        const pollSteeringDuringReply = () => {
+          if (!request.claimSteering || steeringPoll) return;
+          let polling = false;
+          steeringPoll = setInterval(() => {
+            if (polling) return;
+            polling = true;
+            void claimNewSteering()
+              .then((steering) => {
+                if (steering.length === 0) return;
+                heldSteering.push(...steering);
+                if (streamingReply && !signal.aborted) {
+                  interrupting = true;
+                  stopSteeringPoll();
+                  replyInterrupt.abort();
+                }
+              })
+              .catch((error) =>
+                getLogger().warn("Steering poll failed", { runId: request.runId, error }),
+              )
+              .finally(() => {
+                polling = false;
+              });
+          }, STEERING_POLL_MS);
+        };
+        const isInterruptedReply = (message: AgentMessage) =>
+          interrupting && message.role === "assistant" && message.stopReason === "aborted";
+        const steerWith = (steering: AgentSteeringMessage[]) => {
+          for (const item of steering) {
+            const images = toPiImages(item.images);
+            agent.steer({
+              role: "user",
+              content: images.length ? [{ type: "text", text: item.text }, ...images] : item.text,
+              timestamp: Date.now(),
+            });
+          }
+        };
+        const replyCanBeSteered = (message: AgentMessage) =>
+          message.role === "assistant" &&
+          message.stopReason !== "error" &&
+          message.stopReason !== "aborted" &&
+          !host.pausePending &&
+          !host.toolCallBudget.exceeded &&
+          !signal.aborted;
         let activeStreamTarget = host.activeModel;
         const fallbackState: FallbackStreamState = {
           request,
@@ -391,8 +473,9 @@ export class PiAgentRuntime implements AgentRuntime {
         agent = new Agent({
           sessionId: conversationSessionId(request.threadId, request.botId),
           steeringMode: "all",
-          streamFn: (m, ctx, options) =>
-            hasBackups
+          streamFn: (m, ctx, streamOptions) => {
+            const options = interruptibleReply(streamOptions);
+            return hasBackups
               ? fallbackAwareModelStream(fallbackState, ctx, options)
               : reliableModelStream(
                   models,
@@ -413,7 +496,8 @@ export class PiAgentRuntime implements AgentRuntime {
                       usageHooks,
                     ),
                   request.model.cacheCapabilities?.retentionMode,
-                ),
+                );
+          },
           getApiKey: hasBackups
             ? async () => activeStreamTarget.credentials?.accessToken ?? activeStreamTarget.apiKey
             : async () => apiKey,
@@ -439,18 +523,7 @@ export class PiAgentRuntime implements AgentRuntime {
             );
           },
           prepareNextTurnWithContext: async () => {
-            if (!request.claimSteering) return undefined;
-            const steering = await request.claimSteering([...seenSteeringIds]);
-            if (steering.length === 0) return undefined;
-            seenSteeringIds.push(...steering.map((item) => item.id));
-            for (const item of steering) {
-              const images = toPiImages(item.images);
-              agent.steer({
-                role: "user",
-                content: images.length ? [{ type: "text", text: item.text }, ...images] : item.text,
-                timestamp: Date.now(),
-              });
-            }
+            steerWith(await takeSteering());
             return undefined;
           },
           initialState: {
@@ -482,6 +555,7 @@ export class PiAgentRuntime implements AgentRuntime {
         // Text streamed before this point is tool-turn narration. Only text after
         // it counts as the final reply, including when the completed message omits it.
         let streamedBeforePendingFinal = 0;
+        let streamedAtReplyStart = 0;
         agent.subscribe(async (event) => {
           if (event.type === "message_end") {
             await piSession?.appendMessage(event.message);
@@ -500,6 +574,20 @@ export class PiAgentRuntime implements AgentRuntime {
           }
           if (event.type === "message_start" && event.message.role === "assistant") {
             currentMessageStreamed = "";
+            streamedAtReplyStart = streamed.length;
+            streamingReply = true;
+            pollSteeringDuringReply();
+          }
+          if (event.type === "message_end" && event.message.role === "assistant") {
+            streamingReply = false;
+            stopSteeringPoll();
+            if (event.message.stopReason !== "aborted") interrupting = false;
+          }
+          if (
+            (event.type === "message_end" || event.type === "turn_end") &&
+            isInterruptedReply(event.message)
+          ) {
+            return;
           }
           if (
             event.type === "message_update" &&
@@ -522,6 +610,13 @@ export class PiAgentRuntime implements AgentRuntime {
               event.message.role === "assistant" ? assistantText(event.message) : "";
             const hasToolCalls = messageHasToolCall(event.message);
             const hasToolResults = event.toolResults.length > 0;
+            const steering =
+              request.claimSteering &&
+              !hasToolCalls &&
+              !hasToolResults &&
+              replyCanBeSteered(event.message)
+                ? await takeSteering()
+                : [];
 
             // Text in a turn that also contains a tool call is narration, not a final
             // response. Keep the run alive until a later text-only turn answers the user.
@@ -541,6 +636,7 @@ export class PiAgentRuntime implements AgentRuntime {
                   queue.push({ type: "text", text: messageText });
                 }
               } else if (
+                steering.length === 0 &&
                 // A provider failure is not an empty success. Do not schedule
                 // another model turn that would hide the error.
                 !providerFailureText(event.message) &&
@@ -556,6 +652,14 @@ export class PiAgentRuntime implements AgentRuntime {
                   timestamp: Date.now(),
                 });
               }
+            }
+            if (steering.length > 0) {
+              if (streamed.slice(streamedBeforePendingFinal).trim()) {
+                queue.push({ type: "reply_complete" });
+              }
+              streamed = "";
+              streamedBeforePendingFinal = 0;
+              steerWith(steering);
             }
           }
           if (event.type === "message_end" && event.message.role === "assistant") {
@@ -583,12 +687,36 @@ export class PiAgentRuntime implements AgentRuntime {
         // placeholder while a run is active, and emitting one here shows two.
         const images = toPiImages([
           ...(request.currentTurnImages ?? []),
-          ...initialSteering.flatMap((item) => item.images ?? []),
+          ...steeringAfterPrompt.flatMap((item) => item.images ?? []),
         ]);
         try {
           await agent.prompt(initialPrompt, images?.length ? images : undefined);
+          await agent.waitForIdle();
+          while (
+            heldSteering.length > 0 &&
+            !signal.aborted &&
+            !host.pausePending &&
+            !host.toolCallBudget.exceeded
+          ) {
+            const last = agent.state.messages.at(-1);
+            if (last && isInterruptedReply(last)) {
+              agent.state.messages = agent.state.messages.slice(0, -1);
+              streamed = streamed.slice(0, streamedAtReplyStart);
+              queue.push({ type: "reply_discarded" });
+            } else if (streamed.slice(streamedBeforePendingFinal).trim()) {
+              queue.push({ type: "reply_complete" });
+              streamed = "";
+              streamedBeforePendingFinal = 0;
+            }
+            interrupting = false;
+            steerWith(heldSteering);
+            heldSteering = [];
+            await agent.continue();
+            await agent.waitForIdle();
+          }
         } finally {
           try {
+            stopSteeringPoll();
             await agent.waitForIdle();
           } finally {
             signal.removeEventListener("abort", onAbort);
@@ -988,6 +1116,18 @@ function toHistory(
         rakazoCreatedAt: m.createdAt,
       };
     });
+}
+
+function isPromptOrEarlier(
+  item: AgentSteeringMessage,
+  history: AgentRunRequest["history"],
+  sourceMessageId?: string | null,
+) {
+  if (!sourceMessageId) return false;
+  if (item.messageId === sourceMessageId) return true;
+  const sourceIndex = history.findIndex((message) => message.id === sourceMessageId);
+  const itemIndex = history.findIndex((message) => message.id === item.messageId);
+  return sourceIndex >= 0 && itemIndex >= 0 && itemIndex < sourceIndex;
 }
 
 function withoutSteeringMessages(
