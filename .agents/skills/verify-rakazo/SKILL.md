@@ -61,7 +61,7 @@ Fixture model markers, placed in the user's message:
 | `[[slow-final:S]]` | Streams a final answer (no tools) over S seconds, default 20 |
 | `[[slow-tool:S]]` | Streams for S seconds (default 10), then calls `message_user`; the next turn replies as above |
 
-`$C fixture-log` lists every model call with `start`/`end` timestamps, the plan, and the user messages that call received. `$C logs <api|worker|web|fixture|browser>` tails a process log. The run's database is reachable with `docker exec rakazo-verify-<id>-pg psql -U rakazo -d rakazo`.
+`$C fixture-log` lists every model call with `start`/`end` timestamps, the plan, the request's role sequence (`roles`, one letter per message, for example `suau`), and the user messages that call received. A call the client hung up on, after a steer or Stop, ends with an `abort` record holding the text streamed so far. `$C logs <api|worker|web|fixture|browser>` tails a process log. The run's database is reachable with `docker exec rakazo-verify-<id>-pg psql -U rakazo -d rakazo`.
 
 `bin/scenario-steering.sh <bundle>` runs the steering scenarios from `features/steering.md` end to end and writes their artifacts into the bundle.
 

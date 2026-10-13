@@ -59,10 +59,11 @@ function ackText(fresh) {
   return `Fixture saw ${fresh.length} new user message(s): ${fresh.map((text) => `«${condensed(text)}»`).join(" | ")}`;
 }
 
-async function streamWords(emit, text, seconds) {
+async function streamWords(emit, text, seconds, closed) {
   const words = text.split(" ");
   const delay = (seconds * 1000) / words.length;
   for (const word of words) {
+    if (closed()) return;
     emit({ content: `${word} ` });
     await sleep(delay);
   }
@@ -89,13 +90,20 @@ const server = createServer(async (request, response) => {
     phase: "start",
     plan: plan.kind,
     tools: (body.tools ?? []).length,
+    roles: messages.map((message) => message.role[0]).join(""),
     newUserMessages: fresh.map(condensed),
   });
 
+  let streamed = "";
+  response.on("close", () => {
+    if (!response.writableFinished) record({ phase: "abort", streamed: condensed(streamed) });
+  });
+  const closed = () => response.destroyed;
   response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
   response.flushHeaders();
-  const emit = (delta, finishReason = null) =>
-    response.write(
+  const emit = (delta, finishReason = null) => {
+    if (delta.content) streamed += delta.content;
+    return response.write(
       `data: ${JSON.stringify({
         id: `fixture-${n}`,
         object: "chat.completion.chunk",
@@ -104,16 +112,19 @@ const server = createServer(async (request, response) => {
         choices: [{ index: 0, delta, finish_reason: finishReason }],
       })}\n\n`,
     );
+  };
   emit({ role: "assistant" });
 
   let reply;
   if (plan.kind === "slow-final") {
     reply = `Slow final answer. ${ackText(fresh)}`;
-    await streamWords(emit, reply, plan.seconds);
+    await streamWords(emit, reply, plan.seconds, closed);
+    if (closed()) return;
     emit({}, "stop");
   } else if (plan.kind === "slow-tool") {
     reply = "Posting a status before continuing.";
-    await streamWords(emit, reply, plan.seconds);
+    await streamWords(emit, reply, plan.seconds, closed);
+    if (closed()) return;
     emit({
       tool_calls: [
         {

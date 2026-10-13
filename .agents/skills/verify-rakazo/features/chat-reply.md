@@ -26,5 +26,6 @@ Preconditions:
 
 - `browser press Enter --placeholder "Message Chief"` times out; press Enter without a locator after filling.
 - The ARIA snapshot renders the composer's value twice because of its mirror layer; the textarea holds it once.
-- A message whose run was stopped has no reply, so the next model call receives it again alongside the new message (`Fixture saw 2 new user message(s)`). Start from an answered thread when a recipe expects exactly one.
-- A run that fails before the model call (for example `Required context exceeds the model context budget`) shows no reply and no error. Read the run row before concluding the reply is slow.
+- A message whose run was stopped has no reply, so the next model call receives it again, marked `(The user stopped this request.)`, alongside the new message (`Fixture saw 2 new user message(s)`). Start from an answered thread when a recipe expects exactly one.
+- A run that fails before the model call shows an alert with the reason instead of a reply. `$C up --context-window 32768` reproduces one: every send shows `This chat needs about … tokens of context, but the selected model allows about …; choose a model with a larger context window.`
+- The bot's earlier replies reach the model as assistant turns: after one exchange the next call's `roles` reads `suau`.

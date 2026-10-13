@@ -1,12 +1,13 @@
 # Steering
 
-A message a user sends while the bot is still working is meant to guide that work. It reaches the active run between model turns, or starts a follow-up run when the active run ends first.
+A message a user sends while the bot is still working guides that work. It interrupts a streaming reply, reaches the active run between model turns, or starts a follow-up run when it was held behind other work.
 
 ## Sub-features
 
-- `steer-tool-turn` delivers a message sent during a tool-calling turn to the next model call of the same run.
-- `steer-final-turn` covers a message sent while the bot streams its final answer: today the answer does not see it, and a follow-up run answers it.
-- `steer-continuation-framing` is what the follow-up run's model receives: `Respond to the user's steering context.` with the user's text under `Additional user context:`.
+- `steer-interrupt` aborts a reply that is still streaming, drops the partial text, and answers the steer in the same run.
+- `steer-tool-turn` delivers a message sent while a tool runs to the next model call of the same run. Running tools are never interrupted.
+- `steer-final-turn` covers a steer that lands after the reply stream ended but before the run did: the finished reply stays as its own message and the same run answers the steer.
+- `steer-continuation-framing` is what a follow-up run's model receives for a held message: the message itself as the request, with earlier held messages as ordinary user turns.
 
 ## How to get to it (user POV)
 
@@ -20,13 +21,12 @@ Preconditions:
 - An evidence bundle from `$C evidence new steering`.
 
 - **All scenarios.** Run `.agents/skills/verify-rakazo/bin/scenario-steering.sh <bundle>`. It drives the two steps below, captures screenshots and ARIA snapshots before and after each, and prints a model-call table to `model-calls.txt`.
-- **Final-turn steer.** Send `Book the dentist for Tuesday [[slow-final:20]]`, wait for `Chief is working`, wait 6s, send `Actually make it Thursday`. The answer streams for 20s and names only the Tuesday message. A second reply follows whose quoted message starts `Respond to the user's steering context.` and ends `Additional user context: ⏎ Actually make it Thursday`.
-- **Tool-turn steer.** Send `Check the status page [[slow-tool:10]]`, wait 4s, send `Also mention Thursday`. When the 10s turn and its `message_user` call finish, the next model call in the same run replies `Fixture saw 1 new user message(s): «Also mention Thursday»`. There is no second run.
-- **Proof.** In `fixture-log`, the final-turn steer's timestamp falls between call N's `start` and `end`, call N's `newUserMessages` lacks it, and call N+1 starts at call N's `end`. For the tool-turn steer, the call after the tool turn lists it. The run database shows the extra `follow_up` run only for the final-turn case: `select status, trigger from runs order by "createdAt"`.
+- **Steer a streaming answer.** Send `Book the dentist for Tuesday [[slow-final:20]]`, wait for `Chief is working`, wait 6s, send `Actually make it Thursday`. Within about a second the call's stream is aborted and the next call in the same run replies `Fixture saw 2 new user message(s): «Book the dentist … » | «Actually make it Thursday»`. The thread shows that one reply; the partial Tuesday answer is gone.
+- **Steer during tool narration.** Send `Check the status page [[slow-tool:10]]`, wait 4s, send `Also mention Thursday`. The narration stream is aborted before its `message_user` call and the next call lists both messages. There is no second run.
+- **Proof.** In `fixture-log`, the steered call ends with an `abort` record (its `streamed` field holds the partial text) within about a second of the steer, and the next call starts at the same moment. `select trigger, status from runs order by "createdAt"` shows one `user` run per request and no `follow_up`.
 
 ## Gotchas
 
-- Steering is read only between model turns. A steer sent during a long model call or tool waits for it to finish; measure delivery latency from the fixture timestamps, not from the screen.
-- Wait for `Chief is working` to be hidden twice: the follow-up run starts the instant the first run ends.
-- A run started by a routine, webhook or the bot's introduction does not take steering; the message waits for that run to finish. Not covered by these scenarios yet.
-- The expectations in `steer-final-turn` and `steer-continuation-framing` describe current behavior. A fix to either must update this file in the same change.
+- The fixture streams word by word, so any steer sent during a `slow-*` call is an interrupt. `steer-final-turn` and `steer-continuation-framing` need precise timing or a held intro, and are covered by `packages/testkit/src/steering.postgres.test.ts` rather than a live recipe.
+- Two new user messages in the next call is expected after an interrupt: the dropped partial means no assistant turn separates them.
+- A run started by a routine, webhook or the bot's introduction does not take steering; the message waits for that run to finish and is answered by a `follow_up` run.

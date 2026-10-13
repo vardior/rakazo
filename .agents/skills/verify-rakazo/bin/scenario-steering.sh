@@ -6,6 +6,7 @@ ctl="$bin/control-rakazo.mjs"
 composer='textarea[name="chat-message"]'
 bundle="${1:?usage: scenario-steering.sh <evidence-bundle-dir>}"
 mkdir -p "$bundle"
+bundle="$(cd "$bundle" && pwd)"
 
 send() {
   "$ctl" browser fill --css "$composer" --value "$1" >/dev/null
@@ -58,6 +59,6 @@ node -e '
       entry.at.slice(11, 19),
       entry.phase.padEnd(5),
       (entry.plan ?? "").padEnd(10),
-      JSON.stringify(entry.newUserMessages ?? entry.reply),
+      JSON.stringify(entry.newUserMessages ?? entry.reply ?? entry.streamed),
     );
 ' "$bundle/fixture-log.json" | tee "$bundle/model-calls.txt"
