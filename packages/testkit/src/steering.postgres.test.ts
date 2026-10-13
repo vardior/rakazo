@@ -22,7 +22,10 @@ function gate() {
 
 function lastUserText(request: Parameters<ModelEmulatorStep["expect"]>[0]) {
   const content = request.messages.filter((message) => message.role === "user").at(-1)?.content;
-  return typeof content === "string" ? content : JSON.stringify(content);
+  if (typeof content === "string") return content;
+  return (Array.isArray(content) ? content : [])
+    .flatMap((part: { type?: string; text?: string }) => (part.type === "text" ? [part.text] : []))
+    .join("");
 }
 
 async function withSteeringProduct(
@@ -33,6 +36,7 @@ async function withSteeringProduct(
     botMessages: () => Promise<string[]>;
     runTriggers: () => Promise<string[]>;
   }) => Promise<void>,
+  { keepIntro = false } = {},
 ) {
   const model = await startModelEmulator({ steps });
   const dataDir = await mkdtemp(path.join(tmpdir(), "rakazo-steering-fixture-"));
@@ -88,15 +92,17 @@ async function withSteeringProduct(
       instructions: "Answer the user.",
       notifyOnFinish: false,
     });
-    await discardBotIntroRun(handles, cookie, bot.id);
-    await rpc("bots/update", {
-      botId: bot.id,
-      modelProvider: model.model.provider,
-      modelId: model.model.id,
-    });
+    if (!keepIntro) {
+      await discardBotIntroRun(handles, cookie, bot.id);
+      await rpc("bots/update", {
+        botId: bot.id,
+        modelProvider: model.model.provider,
+        modelId: model.model.id,
+      });
+    }
     const runs = () =>
       handles.prisma.run.findMany({
-        where: { botId: bot.id, trigger: { not: "created" } },
+        where: { botId: bot.id, ...(keepIntro ? {} : { trigger: { not: "created" } }) },
         orderBy: { createdAt: "asc" },
       });
     await use({
@@ -161,6 +167,40 @@ describe.skipIf(!enabled)("steering a running reply", () => {
         expect(await product.botMessages()).toEqual(["Booked for Tuesday.", "Moved to Thursday."]);
         expect(await product.runTriggers()).toEqual(["user"]);
       },
+    );
+  }, 60_000);
+
+  it("answers a message held behind other work as the user's own request", async () => {
+    const introducing = gate();
+    const held = gate();
+    await withSteeringProduct(
+      [
+        {
+          expect: async () => {
+            introducing.open();
+            await held.opened;
+          },
+          response: { type: "text", text: "Hi, I'm ready." },
+        },
+        {
+          expect: (request) => {
+            const prompt = lastUserText(request);
+            expect(prompt.startsWith("Book the dentist for Tuesday")).toBe(true);
+            expect(prompt).not.toContain("steering context");
+            expect(prompt).not.toContain("Additional user context");
+          },
+          response: { type: "text", text: "Booked for Tuesday." },
+        },
+      ],
+      async (product) => {
+        await introducing.opened;
+        await product.send("Book the dentist for Tuesday");
+        held.open();
+        await product.waitForIdle();
+        expect(await product.runTriggers()).toEqual(["created", "follow_up"]);
+        expect(await product.botMessages()).toEqual(["Hi, I'm ready.", "Booked for Tuesday."]);
+      },
+      { keepIntro: true },
     );
   }, 60_000);
 });

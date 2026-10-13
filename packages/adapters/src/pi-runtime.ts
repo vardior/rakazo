@@ -264,13 +264,16 @@ export class PiAgentRuntime implements AgentRuntime {
         const seenSteeringIds: string[] = [];
         const initialSteering = request.claimSteering ? await request.claimSteering([]) : [];
         seenSteeringIds.push(...initialSteering.map((item) => item.id));
+        const steeringAfterPrompt = initialSteering.filter(
+          (item) => !isPromptOrEarlier(item, request.history, request.sourceMessageId),
+        );
         const history = toHistory(
-          withoutSteeringMessages(request.history, initialSteering),
+          withoutSteeringMessages(request.history, steeringAfterPrompt),
           request.prompt,
           request.sourceMessageId,
         );
-        const initialPrompt = initialSteering.length
-          ? `${request.prompt}\n\nAdditional user context:\n${initialSteering
+        const initialPrompt = steeringAfterPrompt.length
+          ? `${request.prompt}\n\nAdditional user context:\n${steeringAfterPrompt
               .map((item) => item.text)
               .join("\n")}`
           : request.prompt;
@@ -611,7 +614,7 @@ export class PiAgentRuntime implements AgentRuntime {
         // placeholder while a run is active, and emitting one here shows two.
         const images = toPiImages([
           ...(request.currentTurnImages ?? []),
-          ...initialSteering.flatMap((item) => item.images ?? []),
+          ...steeringAfterPrompt.flatMap((item) => item.images ?? []),
         ]);
         try {
           await agent.prompt(initialPrompt, images?.length ? images : undefined);
@@ -1016,6 +1019,18 @@ function toHistory(
         rakazoCreatedAt: m.createdAt,
       };
     });
+}
+
+function isPromptOrEarlier(
+  item: AgentSteeringMessage,
+  history: AgentRunRequest["history"],
+  sourceMessageId?: string | null,
+) {
+  if (!sourceMessageId) return false;
+  if (item.messageId === sourceMessageId) return true;
+  const sourceIndex = history.findIndex((message) => message.id === sourceMessageId);
+  const itemIndex = history.findIndex((message) => message.id === item.messageId);
+  return sourceIndex >= 0 && itemIndex >= 0 && itemIndex < sourceIndex;
 }
 
 function withoutSteeringMessages(
