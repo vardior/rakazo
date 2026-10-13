@@ -31,10 +31,11 @@ describe.skipIf(!enabled)("persisted source-verified history followups", () => {
         const serialized = JSON.stringify(request.messages);
         expect(serialized).toContain(questions[index]);
         expect(
-          request.messages.filter((row) =>
-            String(row.content).includes(`Assistant: ${verifiedReply}`),
+          request.messages.filter(
+            (row) => row.role === "assistant" && row.content === verifiedReply,
           ),
         ).toHaveLength(index);
+        expect(serialized).not.toContain(`Assistant: ${verifiedReply}`);
         expect(serialized).toContain("do not repeat retrieval solely because the user asks again");
       };
       const key = "synthetic-history-followup-key";

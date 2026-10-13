@@ -457,6 +457,7 @@ export interface AgentRunRequest {
     id?: string;
     createdAt?: string;
     role: "user" | "assistant" | "system";
+    botId?: string;
     content: string;
     /** Images attached to this message, hydrated only for recent user turns. */
     images?: AgentInputImage[];

@@ -142,6 +142,62 @@ describe("runtime context policy", () => {
     expect(body("shell-1")).toContain("[Tool result truncated to fit context");
     expect(body("shell-2")).toBe(shellOutput);
   });
+  it("keeps the recent window when earlier replies are assistant turns and never leads with one", () => {
+    const baseline = fixture(32);
+    const allUserWindow = createRuntimeContextPolicy({
+      ...baseline.request,
+      contextStrategy: "retrieval",
+    }).prepareContext(baseline.context, model).messages.length;
+    const { request, context } = fixture(32);
+    const replies = new Set(Array.from({ length: 16 }, (_, index) => index * 2 + 1));
+    request.history = request.history.map((item, index) =>
+      replies.has(index) ? { ...item, role: "assistant" } : item,
+    );
+    context.messages = context.messages.map((message, index) =>
+      replies.has(index)
+        ? ({
+            role: "assistant",
+            content: [{ type: "text", text: request.history[index]!.content }],
+            api: "synthetic-api",
+            provider: "synthetic-provider",
+            model: "synthetic-model",
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              totalTokens: 0,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+            },
+            stopReason: "stop",
+            timestamp: 0,
+            rakazoHistory: true,
+            rakazoMessageId: request.history[index]!.id,
+          } as Message)
+        : message,
+    );
+    const prepared = createRuntimeContextPolicy({
+      ...request,
+      contextStrategy: "retrieval",
+    }).prepareContext(context, model);
+    expect(prepared.messages).toHaveLength(allUserWindow);
+    expect(prepared.messages.map((message) => message.role)).toEqual([
+      "user",
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+      "user",
+    ]);
+    expect(prepared.messages[0]).toMatchObject({
+      role: "user",
+      content: `Assistant: ${request.history[25]!.content}`,
+      rakazoMessageId: "message-25",
+    });
+    expect(prepared.messages.slice(1)).toEqual(context.messages.slice(26));
+  });
   it("leaves the baseline provider payload untouched", () => {
     const { request, context } = fixture();
     const policy = createRuntimeContextPolicy({ ...request, contextStrategy: "current" });
