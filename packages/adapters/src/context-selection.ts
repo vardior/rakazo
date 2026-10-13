@@ -36,7 +36,10 @@ export class ContextBudgetError extends Error {
     public readonly estimatedTokens: number,
     public readonly availableTokens: number,
   ) {
-    super("Required context exceeds the model context budget");
+    const format = new Intl.NumberFormat("en-US", { maximumSignificantDigits: 3 });
+    super(
+      `This chat needs about ${format.format(estimatedTokens)} tokens of context, but the selected model allows about ${format.format(availableTokens)}; choose a model with a larger context window.`,
+    );
     this.name = "ContextBudgetError";
   }
 }
