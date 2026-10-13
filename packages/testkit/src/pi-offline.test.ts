@@ -233,7 +233,9 @@ describe("real Pi against an offline model HTTP endpoint", () => {
         ),
         events,
       ),
-    ).rejects.toThrow("Required context exceeds the model context budget");
+    ).rejects.toThrow(
+      /^This chat needs about [\d,]+ tokens of context, but the selected model allows about 3,070; choose a model with a larger context window\.$/,
+    );
     server.assertComplete();
     expect(reservations).toBe(0);
     expect(events.filter((event) => event.type === "usage")).toHaveLength(0);

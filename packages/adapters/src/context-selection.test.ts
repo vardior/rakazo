@@ -15,6 +15,18 @@ const budget = {
 };
 const user = (content: string) => ({ role: "user", content, timestamp: 1 });
 describe("bounded context selection", () => {
+  it("explains the required context, available budget and remedy with rounded counts", () => {
+    const error = new ContextBudgetError(41042, 28672);
+    expect(error.message).toBe(
+      "This chat needs about 41,000 tokens of context, but the selected model allows about 28,700; choose a model with a larger context window.",
+    );
+    expect(error).toMatchObject({
+      name: "ContextBudgetError",
+      estimatedTokens: 41042,
+      availableTokens: 28672,
+    });
+    expect(error.message.length).toBeLessThan(300);
+  });
   it("accounts for instructions, tools, images and output reserve", () => {
     expect(estimateContextTokens([{ type: "image", data: "base64" }], 1000)).toBeGreaterThan(1000);
     const selected = selectContext([user("current")], { budget, strategy: "retrieval" });
