@@ -101,6 +101,27 @@ describe("reply context", () => {
     ).toBe("❤️");
   });
 
+  it.each(["completed", "failed", "running", "cancelled"])(
+    "annotates only cancelled user requests without mutating their blocks (%s)",
+    (status) => {
+      const message = {
+        id: "request",
+        threadId: "thread-1",
+        role: "user",
+        blocks: [{ kind: "text", text: "Write a long report" }],
+        sourceRuns: [{ status }],
+      };
+      const expected =
+        status === "cancelled"
+          ? "Write a long report\n\n(The user stopped this request.)"
+          : "Write a long report";
+      expect(messageToAgentHistoryText(message)).toBe(expected);
+      expect(messageToAgentHistoryText(message)).toBe(expected);
+      expect(message.blocks).toEqual([{ kind: "text", text: "Write a long report" }]);
+      expect(messageToAgentHistoryText({ ...message, role: "bot" })).toBe("Write a long report");
+    },
+  );
+
   it("preserves reply context in historical messages", () => {
     const text = messageToAgentHistoryText({
       id: "reply",
