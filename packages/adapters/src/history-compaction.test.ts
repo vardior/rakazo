@@ -225,6 +225,7 @@ type HarnessMessage = {
   seq: number;
   role: string;
   blocks: MessageBlock[];
+  sourceRuns?: Array<{ status: string }>;
 };
 
 function compactionHarness(
@@ -473,6 +474,35 @@ describe("recordHistoryCompactAttemptsExhausted", () => {
 });
 
 describe("compactHistory", () => {
+  it("keeps stopped intent in the transcript passed to the summarizer", async () => {
+    const harness = compactionHarness({
+      deploymentModelKey: "fake-key",
+      messages: [
+        {
+          seq: 0,
+          role: "user",
+          blocks: [{ kind: "text", text: "Write a long report" }],
+          sourceRuns: [{ status: "cancelled" }],
+        },
+        { seq: 1, role: "bot", blocks: [{ kind: "text", text: "Report introduction" }] },
+        {
+          seq: 2,
+          role: "user",
+          blocks: [{ kind: "text", text: "Summarize my week" }],
+          sourceRuns: [{ status: "completed" }],
+        },
+      ],
+    });
+    await compactHistory(harness.deps, "thread-1");
+    const [request] = harness.runtime.run.mock.calls[0]!;
+    expect(request.prompt).toContain(
+      "user: Write a long report\n\n(The user stopped this request.)",
+    );
+    expect(request.prompt).toContain("bot: Report introduction");
+    expect(request.prompt).toContain("user: Summarize my week");
+    expect(request.prompt.match(/The user stopped this request/g)).toHaveLength(1);
+  });
+
   it("summarizes the next batch, saves it through the provider, and advances the cursor", async () => {
     const harness = compactionHarness({ deploymentModelKey: "openrouter-key" });
 

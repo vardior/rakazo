@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { approvalEffectKey } from "@rakazo/core/node/approval-effect-key";
 import { createThreadEvents, createThreadMessage, loadRunHistoryMessages } from "@rakazo/db";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { createApp } from "../../../apps/api/src/app.ts";
 import { discardBotIntroFromCreate } from "./discard-bot-intro.js";
 
@@ -478,6 +478,72 @@ describeIntegration("run executor lifecycle", () => {
       );
     }
   });
+
+  it.each([
+    ["cancelled", false],
+    ["cancelled", true],
+    ["completed", true],
+    ["failed", false],
+  ])(
+    "preserves %s request intent in later model history with output=%s",
+    async (status, output) => {
+      const seeded = await seedRun(`history-${status}-${output}`, "Write a long report", {
+        status: status === "cancelled" ? "running" : status,
+        leaseOwner: "history-worker",
+        leaseFence: 1,
+        leaseExpiresAt: new Date(Date.now() + 60_000),
+        startedAt: new Date(),
+      });
+      const source = await createThreadMessage(handles.prisma, {
+        threadId: seeded.thread.id,
+        role: "user",
+        blocks: [{ kind: "text", text: "Write a long report" }],
+      });
+      await handles.prisma.run.update({
+        where: { id: seeded.run.id },
+        data: { sourceMessageId: source.id },
+      });
+      if (output) {
+        await createThreadMessage(handles.prisma, {
+          threadId: seeded.thread.id,
+          role: "bot",
+          runId: seeded.run.id,
+          blocks: [{ kind: "text", text: "Report introduction" }],
+        });
+      }
+      if (status === "cancelled") {
+        await rpc(seeded.cookie, "threads/stop", { botId: seeded.bot.id });
+      }
+      const runtime = vi.spyOn(handles.runtime, "run");
+      try {
+        for (const text of ["Summarize my week", "Summarize my day"]) {
+          runtime.mockClear();
+          await rpc(seeded.cookie, "threads/send", { botId: seeded.bot.id, text });
+          await handles.awaitIdle?.();
+          const request = runtime.mock.calls.find(([request]) =>
+            request.history.some((message) => message.id === source.id),
+          )?.[0];
+          expect(request).toBeDefined();
+          expect(request!.history.find((message) => message.id === source.id)?.content).toBe(
+            status === "cancelled"
+              ? "Write a long report\n\n(The user stopped this request.)"
+              : "Write a long report",
+          );
+          if (output) {
+            expect(
+              request!.history.some((message) => message.content === "Report introduction"),
+            ).toBe(true);
+          }
+        }
+        const stored = await handles.prisma.message.findUniqueOrThrow({ where: { id: source.id } });
+        expect(stored.blocks).toEqual([{ kind: "text", text: "Write a long report" }]);
+        const run = await handles.prisma.run.findUniqueOrThrow({ where: { id: seeded.run.id } });
+        expect(run.status).toBe(status);
+      } finally {
+        runtime.mockRestore();
+      }
+    },
+  );
 
   it("discards pending steering when the user stops active work", async () => {
     const seeded = await seedRun("steering-stop", "keep working", {
