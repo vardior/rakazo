@@ -203,4 +203,31 @@ describe.skipIf(!enabled)("steering a running reply", () => {
       { keepIntro: true },
     );
   }, 60_000);
+
+  it("interrupts a streaming reply to answer a correction", async () => {
+    const streaming = gate();
+    await withSteeringProduct(
+      [
+        {
+          expect: () => {},
+          response: { type: "hold", text: "Here is the long report", onOpen: streaming.open },
+        },
+        {
+          expect: (request) => {
+            expect(lastUserText(request)).toContain("Stop, just summarize");
+            expect(JSON.stringify(request.messages)).not.toContain("Here is the long report");
+          },
+          response: { type: "text", text: "Summary." },
+        },
+      ],
+      async (product) => {
+        await product.send("Write a long report");
+        await streaming.opened;
+        await product.send("Stop, just summarize");
+        await product.waitForIdle();
+        expect(await product.botMessages()).toEqual(["Summary."]);
+        expect(await product.runTriggers()).toEqual(["user"]);
+      },
+    );
+  }, 60_000);
 });

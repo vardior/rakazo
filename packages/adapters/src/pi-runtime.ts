@@ -95,6 +95,7 @@ const MAX_PARALLEL_SUBAGENTS = 4;
 // instead of taking another assistant turn. A bounded internal follow-up keeps
 // that provider quirk from making a long task look complete after one step.
 const MAX_SILENT_TOOL_CONTINUATIONS = 3;
+const STEERING_POLL_MS = 1_000;
 const SILENT_TOOL_CONTINUATION_PROMPT =
   "Continue the original task from the latest tool result. Do not stop after a tool call; use any remaining tools needed, then give the user the final answer.";
 const SILENT_ALLOWED_TOOL_CONTINUATION_PROMPT =
@@ -331,12 +332,67 @@ export class PiAgentRuntime implements AgentRuntime {
         const providerFailures = new WeakSet<AssistantMessage["content"]>();
         const hasBackups = Boolean(request.fallbackModels?.length);
         let agent: Agent;
-        const claimNewSteering = async () => {
-          if (!request.claimSteering) return [];
-          const steering = await request.claimSteering([...seenSteeringIds]);
-          seenSteeringIds.push(...steering.map((item) => item.id));
+        let claiming: Promise<unknown> = Promise.resolve();
+        const claimNewSteering = () => {
+          const claimed = claiming.then(async () => {
+            if (!request.claimSteering) return [];
+            const steering = await request.claimSteering([...seenSteeringIds]);
+            seenSteeringIds.push(...steering.map((item) => item.id));
+            return steering;
+          });
+          claiming = claimed.catch(() => undefined);
+          return claimed;
+        };
+        let heldSteering: AgentSteeringMessage[] = [];
+        const takeSteering = async () => {
+          const claimed = await claimNewSteering();
+          const steering = [...heldSteering, ...claimed];
+          heldSteering = [];
           return steering;
         };
+        let interrupting = false;
+        let replyInterrupt = new AbortController();
+        const interruptibleReply = (options?: ModelsSimpleStreamOptions) => {
+          replyInterrupt = new AbortController();
+          return {
+            ...options,
+            signal: options?.signal
+              ? AbortSignal.any([options.signal, replyInterrupt.signal])
+              : replyInterrupt.signal,
+          };
+        };
+        let streamingReply = false;
+        let steeringPoll: ReturnType<typeof setInterval> | undefined;
+        const stopSteeringPoll = () => {
+          clearInterval(steeringPoll);
+          steeringPoll = undefined;
+        };
+        const pollSteeringDuringReply = () => {
+          if (!request.claimSteering || steeringPoll) return;
+          let polling = false;
+          steeringPoll = setInterval(() => {
+            if (polling) return;
+            polling = true;
+            void claimNewSteering()
+              .then((steering) => {
+                if (steering.length === 0) return;
+                heldSteering.push(...steering);
+                if (streamingReply && !signal.aborted) {
+                  interrupting = true;
+                  stopSteeringPoll();
+                  replyInterrupt.abort();
+                }
+              })
+              .catch((error) =>
+                getLogger().warn("Steering poll failed", { runId: request.runId, error }),
+              )
+              .finally(() => {
+                polling = false;
+              });
+          }, STEERING_POLL_MS);
+        };
+        const isInterruptedReply = (message: AgentMessage) =>
+          interrupting && message.role === "assistant" && message.stopReason === "aborted";
         const steerWith = (steering: AgentSteeringMessage[]) => {
           for (const item of steering) {
             const images = toPiImages(item.images);
@@ -417,8 +473,9 @@ export class PiAgentRuntime implements AgentRuntime {
         agent = new Agent({
           sessionId: conversationSessionId(request.threadId, request.botId),
           steeringMode: "all",
-          streamFn: (m, ctx, options) =>
-            hasBackups
+          streamFn: (m, ctx, streamOptions) => {
+            const options = interruptibleReply(streamOptions);
+            return hasBackups
               ? fallbackAwareModelStream(fallbackState, ctx, options)
               : reliableModelStream(
                   models,
@@ -439,7 +496,8 @@ export class PiAgentRuntime implements AgentRuntime {
                       usageHooks,
                     ),
                   request.model.cacheCapabilities?.retentionMode,
-                ),
+                );
+          },
           getApiKey: hasBackups
             ? async () => activeStreamTarget.credentials?.accessToken ?? activeStreamTarget.apiKey
             : async () => apiKey,
@@ -465,7 +523,7 @@ export class PiAgentRuntime implements AgentRuntime {
             );
           },
           prepareNextTurnWithContext: async () => {
-            steerWith(await claimNewSteering());
+            steerWith(await takeSteering());
             return undefined;
           },
           initialState: {
@@ -497,6 +555,7 @@ export class PiAgentRuntime implements AgentRuntime {
         // Text streamed before this point is tool-turn narration. Only text after
         // it counts as the final reply, including when the completed message omits it.
         let streamedBeforePendingFinal = 0;
+        let streamedAtReplyStart = 0;
         agent.subscribe(async (event) => {
           if (event.type === "message_end") {
             await piSession?.appendMessage(event.message);
@@ -515,6 +574,20 @@ export class PiAgentRuntime implements AgentRuntime {
           }
           if (event.type === "message_start" && event.message.role === "assistant") {
             currentMessageStreamed = "";
+            streamedAtReplyStart = streamed.length;
+            streamingReply = true;
+            pollSteeringDuringReply();
+          }
+          if (event.type === "message_end" && event.message.role === "assistant") {
+            streamingReply = false;
+            stopSteeringPoll();
+            if (event.message.stopReason !== "aborted") interrupting = false;
+          }
+          if (
+            (event.type === "message_end" || event.type === "turn_end") &&
+            isInterruptedReply(event.message)
+          ) {
+            return;
           }
           if (
             event.type === "message_update" &&
@@ -542,7 +615,7 @@ export class PiAgentRuntime implements AgentRuntime {
               !hasToolCalls &&
               !hasToolResults &&
               replyCanBeSteered(event.message)
-                ? await claimNewSteering()
+                ? await takeSteering()
                 : [];
 
             // Text in a turn that also contains a tool call is narration, not a final
@@ -618,8 +691,32 @@ export class PiAgentRuntime implements AgentRuntime {
         ]);
         try {
           await agent.prompt(initialPrompt, images?.length ? images : undefined);
+          await agent.waitForIdle();
+          while (
+            heldSteering.length > 0 &&
+            !signal.aborted &&
+            !host.pausePending &&
+            !host.toolCallBudget.exceeded
+          ) {
+            const last = agent.state.messages.at(-1);
+            if (last && isInterruptedReply(last)) {
+              agent.state.messages = agent.state.messages.slice(0, -1);
+              streamed = streamed.slice(0, streamedAtReplyStart);
+              queue.push({ type: "reply_discarded" });
+            } else if (streamed.slice(streamedBeforePendingFinal).trim()) {
+              queue.push({ type: "reply_complete" });
+              streamed = "";
+              streamedBeforePendingFinal = 0;
+            }
+            interrupting = false;
+            steerWith(heldSteering);
+            heldSteering = [];
+            await agent.continue();
+            await agent.waitForIdle();
+          }
         } finally {
           try {
+            stopSteeringPoll();
             await agent.waitForIdle();
           } finally {
             signal.removeEventListener("abort", onAbort);

@@ -6716,6 +6716,22 @@ export function createRunExecutor(deps: ExecutorDeps) {
               await flushProgress();
               flushPendingTools();
               await publishMidTurnNarration((text) => text.trim());
+            } else if (event.type === "reply_discarded") {
+              assembled = assembled.slice(0, assembled.length - currentTextSegment.length);
+              currentTextSegment = "";
+              pendingProgress = "";
+              progressRedactor = createStreamingRedactor(runSecrets);
+              if (hasStreamedText) {
+                await deps.events.append({
+                  spaceId: run.spaceId,
+                  threadId: thread.id,
+                  botId: bot.id,
+                  type: "thread.progress",
+                  runId,
+                  payload: { text: "", streaming: true },
+                });
+                hasStreamedText = false;
+              }
             } else if (event.type === "progress") {
               toolCallStreak = { key: undefined, count: 0 };
               if (isBackgroundRunTrigger(run.trigger)) continue;
