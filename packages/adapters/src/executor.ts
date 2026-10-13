@@ -3981,9 +3981,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
           pendingProgress = "";
           lastProgressAt = Date.now();
         };
-        const publishMidTurnNarration = async () => {
+        const publishMidTurnNarration = async (fitNarration = clampUserProgressMessage) => {
           const extracted = extractNarrationText(messageSegments, currentTextSegment);
-          const narration = clampUserProgressMessage(redactSecrets(extracted.text, runSecrets));
+          const narration = fitNarration(redactSecrets(extracted.text, runSecrets));
           messageSegments = extracted.remaining;
           currentTextSegment = "";
           if (!narration) return;
@@ -6712,6 +6712,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
               if (!scripted && pendingProgress && now - lastProgressAt >= 250) {
                 await flushProgress();
               }
+            } else if (event.type === "reply_complete") {
+              await flushProgress();
+              flushPendingTools();
+              await publishMidTurnNarration((text) => text.trim());
             } else if (event.type === "progress") {
               toolCallStreak = { key: undefined, count: 0 };
               if (isBackgroundRunTrigger(run.trigger)) continue;

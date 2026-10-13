@@ -328,6 +328,29 @@ export class PiAgentRuntime implements AgentRuntime {
         const providerFailures = new WeakSet<AssistantMessage["content"]>();
         const hasBackups = Boolean(request.fallbackModels?.length);
         let agent: Agent;
+        const claimNewSteering = async () => {
+          if (!request.claimSteering) return [];
+          const steering = await request.claimSteering([...seenSteeringIds]);
+          seenSteeringIds.push(...steering.map((item) => item.id));
+          return steering;
+        };
+        const steerWith = (steering: AgentSteeringMessage[]) => {
+          for (const item of steering) {
+            const images = toPiImages(item.images);
+            agent.steer({
+              role: "user",
+              content: images.length ? [{ type: "text", text: item.text }, ...images] : item.text,
+              timestamp: Date.now(),
+            });
+          }
+        };
+        const replyCanBeSteered = (message: AgentMessage) =>
+          message.role === "assistant" &&
+          message.stopReason !== "error" &&
+          message.stopReason !== "aborted" &&
+          !host.pausePending &&
+          !host.toolCallBudget.exceeded &&
+          !signal.aborted;
         let activeStreamTarget = host.activeModel;
         const fallbackState: FallbackStreamState = {
           request,
@@ -439,18 +462,7 @@ export class PiAgentRuntime implements AgentRuntime {
             );
           },
           prepareNextTurnWithContext: async () => {
-            if (!request.claimSteering) return undefined;
-            const steering = await request.claimSteering([...seenSteeringIds]);
-            if (steering.length === 0) return undefined;
-            seenSteeringIds.push(...steering.map((item) => item.id));
-            for (const item of steering) {
-              const images = toPiImages(item.images);
-              agent.steer({
-                role: "user",
-                content: images.length ? [{ type: "text", text: item.text }, ...images] : item.text,
-                timestamp: Date.now(),
-              });
-            }
+            steerWith(await claimNewSteering());
             return undefined;
           },
           initialState: {
@@ -522,6 +534,13 @@ export class PiAgentRuntime implements AgentRuntime {
               event.message.role === "assistant" ? assistantText(event.message) : "";
             const hasToolCalls = messageHasToolCall(event.message);
             const hasToolResults = event.toolResults.length > 0;
+            const steering =
+              request.claimSteering &&
+              !hasToolCalls &&
+              !hasToolResults &&
+              replyCanBeSteered(event.message)
+                ? await claimNewSteering()
+                : [];
 
             // Text in a turn that also contains a tool call is narration, not a final
             // response. Keep the run alive until a later text-only turn answers the user.
@@ -541,6 +560,7 @@ export class PiAgentRuntime implements AgentRuntime {
                   queue.push({ type: "text", text: messageText });
                 }
               } else if (
+                steering.length === 0 &&
                 // A provider failure is not an empty success. Do not schedule
                 // another model turn that would hide the error.
                 !providerFailureText(event.message) &&
@@ -556,6 +576,14 @@ export class PiAgentRuntime implements AgentRuntime {
                   timestamp: Date.now(),
                 });
               }
+            }
+            if (steering.length > 0) {
+              if (streamed.slice(streamedBeforePendingFinal).trim()) {
+                queue.push({ type: "reply_complete" });
+              }
+              streamed = "";
+              streamedBeforePendingFinal = 0;
+              steerWith(steering);
             }
           }
           if (event.type === "message_end" && event.message.role === "assistant") {
