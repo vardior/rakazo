@@ -35,7 +35,9 @@ const CHECKOUT_ENV_TO_BLANK =
 const USAGE = `control-rakazo: drive an isolated Rakazo stack for verification.
 
 Stack
-  up [--model fixture|env] [--id ID]   start Postgres, API, worker, web, fixture model, browser
+  up [--model fixture|env] [--context-window N] [--id ID]
+                                       start Postgres, API, worker, web, fixture model, browser;
+                                       N is the fixture model's declared window (default 200000)
   doctor [--id ID]                     read-only health of a run (exit 1 when unhealthy)
   down [--id ID] [--dry-run]           stop everything the run started and delete its scratch state
   list                                 runs under .verify-runs/
@@ -243,7 +245,7 @@ function stackEnv(state) {
     RAKAZO_LOCAL_MODELS_URL: `${localUrl(state.ports.fixture)}/v1`,
     PI_DEFAULT_PROVIDER: "local",
     PI_DEFAULT_MODEL: fixtureModelId,
-    RAKAZO_LOCAL_CONTEXT_WINDOW: "200000",
+    RAKAZO_LOCAL_CONTEXT_WINDOW: String(state.contextWindow),
     RAKAZO_LOCAL_MAX_TOKENS: "8192",
   };
 }
@@ -288,6 +290,7 @@ async function up(values) {
   const state = {
     id,
     model,
+    contextWindow: Number(values["context-window"] ?? 200_000),
     checkout: repoRoot,
     ...checkoutInfo(),
     startedAt: new Date().toISOString(),
@@ -598,6 +601,7 @@ const { values, positionals } = parseArgs({
   options: {
     id: { type: "string" },
     model: { type: "string" },
+    "context-window": { type: "string" },
     lines: { type: "string" },
     "dry-run": { type: "boolean" },
     role: { type: "string" },
