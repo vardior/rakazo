@@ -12,6 +12,7 @@ import type {
   ModelThinkingLevel,
   ProviderHeaders,
   TranscriptContext,
+  Usage,
 } from "@earendil-works/pi-ai";
 import { clampThinkingLevel, Type } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
@@ -66,7 +67,11 @@ import type { PiSessionHandle, PiSessionRecorder } from "./pi-session.js";
 import { PiJsonlSessionRecorder } from "./pi-session.js";
 import { observedPiStream } from "./pi-usage.js";
 import type { RuntimeContextDecision } from "./runtime-context.js";
-import { createRuntimeContextPolicy, VERBATIM_TOOL_RESULTS } from "./runtime-context.js";
+import {
+  createRuntimeContextPolicy,
+  quotedAssistantText,
+  VERBATIM_TOOL_RESULTS,
+} from "./runtime-context.js";
 import type { FinishedShellCommand } from "./shell-command-stream.js";
 import { deliverFinishedShells } from "./shell-command-stream.js";
 import { textContentArg } from "./tool-text.js";
@@ -267,6 +272,7 @@ export class PiAgentRuntime implements AgentRuntime {
         const history = toHistory(
           withoutSteeringMessages(request.history, initialSteering),
           request.prompt,
+          request.botId,
           request.sourceMessageId,
         );
         const initialPrompt = initialSteering.length
@@ -954,9 +960,27 @@ function stableToolNameHash(name: string): string {
   return (hash >>> 0).toString(36);
 }
 
+const PRIOR_REPLY_ORIGIN = {
+  api: "rakazo-thread",
+  provider: "rakazo",
+  model: "prior-reply",
+} satisfies Pick<AssistantMessage, "api" | "provider" | "model">;
+
+function emptyUsage(): Usage {
+  return {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens: 0,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  };
+}
+
 function toHistory(
   history: AgentRunRequest["history"],
   prompt: string,
+  botId: string,
   sourceMessageId?: string | null,
 ) {
   let duplicatePromptIndex = -1;
@@ -976,16 +1000,29 @@ function toHistory(
       : history.filter((_, index) => index !== duplicatePromptIndex);
   return prior
     .filter((m) => m.role === "user" || m.role === "assistant")
-    .map((m) => {
-      const text = m.role === "assistant" ? `Assistant: ${m.content}` : m.content;
-      const images = m.role === "assistant" ? [] : toPiImages(m.images);
-      return {
-        role: "user" as const,
-        content: images.length ? [{ type: "text" as const, text }, ...images] : text,
+    .map((m): AgentMessage => {
+      const metadata = {
         timestamp: Date.now(),
         rakazoHistory: true,
         rakazoMessageId: m.id,
         rakazoCreatedAt: m.createdAt,
+      };
+      if (m.role === "assistant" && (!m.botId || m.botId === botId)) {
+        return {
+          role: "assistant",
+          content: [{ type: "text", text: m.content }],
+          ...PRIOR_REPLY_ORIGIN,
+          usage: emptyUsage(),
+          stopReason: "stop",
+          ...metadata,
+        };
+      }
+      const text = m.role === "assistant" ? quotedAssistantText(m.content) : m.content;
+      const images = m.role === "assistant" ? [] : toPiImages(m.images);
+      return {
+        role: "user",
+        content: images.length ? [{ type: "text", text }, ...images] : text,
+        ...metadata,
       };
     });
 }
@@ -2448,14 +2485,7 @@ function fallbackAwareModelStream(
       api: target.model.api,
       provider: target.model.provider,
       model: target.model.id,
-      usage: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        totalTokens: 0,
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-      },
+      usage: emptyUsage(),
       stopReason,
       errorMessage: message,
       timestamp: Date.now(),

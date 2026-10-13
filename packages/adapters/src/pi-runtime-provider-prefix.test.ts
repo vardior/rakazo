@@ -163,6 +163,103 @@ describe("Pi outgoing provider prefixes", () => {
     }
   }, 30_000);
 
+  it("sends the bot's own earlier replies as assistant turns with a stable history prefix", async () => {
+    const requests: Array<{ messages: Array<{ role: string; content: unknown }> }> = [];
+    const server = createServer((request, response) => {
+      void (async () => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of request) chunks.push(Buffer.from(chunk));
+        requests.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.end(
+          `data: ${JSON.stringify({ id: "fixture", choices: [{ index: 0, delta: { role: "assistant", content: "Friday at noon." }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`,
+        );
+      })().catch(() => response.destroy());
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Fixture endpoint unavailable");
+    const history = [
+      {
+        id: "intro",
+        role: "assistant" as const,
+        botId: "bot-fixture",
+        content: "Hi, I plan launches.",
+      },
+      { id: "ask", role: "user" as const, content: "Plan the launch." },
+      {
+        id: "plan",
+        role: "assistant" as const,
+        botId: "bot-fixture",
+        content: "Launch is Friday.",
+      },
+      { id: "invites", role: "assistant" as const, content: "Invites are out." },
+      { id: "teammate", role: "assistant" as const, botId: "teammate", content: "Design is done." },
+    ];
+    const run = async (runId: string, prompt: string, priorHistory: typeof history) => {
+      for await (const _event of new PiAgentRuntime().run(
+        {
+          botId: "bot-fixture",
+          threadId: "thread-fixture",
+          runId,
+          prompt,
+          instructions: "Answer briefly.",
+          history: priorHistory,
+          tools: [],
+          model: {
+            provider: "openai-compatible",
+            id: "fixture",
+            baseUrl: `http://127.0.0.1:${address.port}/v1`,
+            contextWindow: 128_000,
+            maxTokens: 4096,
+          },
+        },
+        { signal: AbortSignal.timeout(15_000) },
+      )) {
+        // exhaust runtime
+      }
+    };
+    try {
+      await run("run-first", "When is it?", history);
+      await run("run-second", "Thanks.", [
+        ...history,
+        { id: "when", role: "user" as const, content: "When is it?" },
+        {
+          id: "answer",
+          role: "assistant" as const,
+          botId: "bot-fixture",
+          content: "Friday at noon.",
+        },
+      ]);
+      const turns = (index: number) =>
+        requests[index]!.messages.filter((message) => message.role !== "system").map(
+          ({ role, content }) => ({ role, content }),
+        );
+      expect(turns(0)).toEqual([
+        { role: "user", content: "Assistant: Hi, I plan launches." },
+        { role: "user", content: "Plan the launch." },
+        { role: "assistant", content: "Launch is Friday." },
+        { role: "user", content: "Assistant: Invites are out." },
+        { role: "user", content: "Assistant: Design is done." },
+        { role: "user", content: [{ type: "text", text: "When is it?" }] },
+      ]);
+      expect(turns(1).slice(-3)).toEqual([
+        { role: "user", content: "When is it?" },
+        { role: "assistant", content: "Friday at noon." },
+        { role: "user", content: [{ type: "text", text: "Thanks." }] },
+      ]);
+      const priorPrefix = requests[0]!.messages.slice(0, -1);
+      expect(JSON.stringify(requests[1]!.messages.slice(0, priorPrefix.length))).toBe(
+        JSON.stringify(priorPrefix),
+      );
+    } finally {
+      server.close();
+      server.closeAllConnections();
+      await once(server, "close");
+    }
+  }, 30_000);
+
   it("keeps tool names, nested schemas and stable instructions unchanged across registration order and memory updates", async () => {
     const requests: Array<{ tools: unknown; messages: Array<{ role: string; content: string }> }> =
       [];

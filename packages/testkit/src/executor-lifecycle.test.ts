@@ -1,9 +1,11 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import type { AgentRunRequest, AgentRuntimeEvent } from "@rakazo/adapter-kit";
+import { ScriptedAgentRuntime } from "@rakazo/adapters";
 import { approvalEffectKey } from "@rakazo/core/node/approval-effect-key";
 import { createThreadEvents, createThreadMessage, loadRunHistoryMessages } from "@rakazo/db";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { createApp } from "../../../apps/api/src/app.ts";
 import { discardBotIntroFromCreate } from "./discard-bot-intro.js";
 
@@ -654,6 +656,81 @@ describeIntegration("run executor lifecycle", () => {
     expect(first.runIds).toHaveLength(2);
     expect(replay.runIds).toEqual(first.runIds);
     expect(await handles.prisma.run.count({ where: { threadId: thread.id } })).toBe(2);
+  });
+
+  it("attributes each group member's earlier replies to that member in run history", async () => {
+    const cookie = await signup(`executor-group-history-${stamp}@rakazo.test`, "Group history");
+    const me = await rpc<{ userId: string; spaceId: string }>(cookie, "me");
+    const lead = await rpc<{ id: string }>(cookie, "bots/create", {
+      name: "History lead",
+      title: "",
+      description: "",
+      instructions: "",
+      notifyOnFinish: false,
+    });
+    const helper = await rpc<{ id: string }>(cookie, "bots/create", {
+      name: "History helper",
+      title: "",
+      description: "",
+      instructions: "",
+      notifyOnFinish: false,
+    });
+    const group = await rpc<{ id: string }>(cookie, "groups/create", {
+      name: "History group",
+      botIds: [lead.id, helper.id],
+    });
+    const thread = await handles.prisma.thread.findUniqueOrThrow({ where: { groupId: group.id } });
+    await createThreadMessage(handles.prisma, {
+      threadId: thread.id,
+      role: "bot",
+      botId: lead.id,
+      blocks: [{ kind: "text", text: "Lead reply" }],
+    });
+    await createThreadMessage(handles.prisma, {
+      threadId: thread.id,
+      role: "bot",
+      botId: helper.id,
+      blocks: [{ kind: "text", text: "Helper reply" }],
+    });
+    const task = await handles.prisma.task.create({
+      data: {
+        spaceId: me.spaceId,
+        botId: lead.id,
+        threadId: thread.id,
+        userId: me.userId,
+        prompt: "Summarize",
+        status: "queued",
+      },
+    });
+    const run = await handles.prisma.run.create({
+      data: {
+        spaceId: me.spaceId,
+        botId: lead.id,
+        threadId: thread.id,
+        taskId: task.id,
+        userId: me.userId,
+        status: "queued",
+        trigger: "user",
+      },
+    });
+    let history: AgentRunRequest["history"] = [];
+    const runtime = vi
+      .spyOn(ScriptedAgentRuntime.prototype, "run")
+      .mockImplementation(async function* (request): AsyncIterable<AgentRuntimeEvent> {
+        if (request.runId === run.id) history = request.history;
+        yield { type: "done", text: "Done" };
+      });
+    try {
+      await handles.executor.continueRun(run.id, "test-worker");
+    } finally {
+      runtime.mockRestore();
+    }
+    expect(history).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ role: "assistant", botId: lead.id, content: "Lead reply" }),
+        expect.objectContaining({ role: "assistant", botId: helper.id, content: "Helper reply" }),
+      ]),
+    );
   });
 
   it("leaves private steering for a private continuation and excludes it from group recovery", async () => {

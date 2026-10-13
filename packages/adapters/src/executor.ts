@@ -3520,6 +3520,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 | "user"
                 | "assistant"
                 | "system",
+              botId: m.botId ?? undefined,
               content: messageToAgentHistoryText(m),
             })),
             summary: thread.historyCompactionSummary,
@@ -3532,10 +3533,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
           summary: threadContext.summary,
           historyCompactedUpToSeq: threadContext.historyCompactedUpToSeq,
         });
-        let history = compactedHistory.history.map(({ id, role, content, createdAt }) => ({
+        let history = compactedHistory.history.map(({ id, role, botId, content, createdAt }) => ({
           id,
           createdAt,
           role,
+          botId,
           content,
         }));
         const historyMessages = messages.map((message) => ({

@@ -311,6 +311,18 @@ function messageGroups(
   }
   return groups;
 }
+function isConversationTurn(message: ContextMessage): boolean {
+  if (message.role === "user") return true;
+  return (
+    message.role === "assistant" &&
+    !(
+      Array.isArray(message.content) &&
+      message.content.some(
+        (part) => part && typeof part === "object" && "type" in part && part.type === "toolCall",
+      )
+    )
+  );
+}
 /** Cheap selection only. No clock event or strategy calls a model or creates a summary. */
 export function selectContext<T extends ContextMessage>(
   messages: readonly T[],
@@ -411,7 +423,7 @@ export function selectContext<T extends ContextMessage>(
   // Retain a contiguous recent suffix. Skip no holes inside a retained tool group.
   for (let index = groups.length - 1; index >= 0; index--) {
     const group = groups[index]!;
-    if (group.indexes.some((i) => messages[i]!.role === "user")) exchanges += 1;
+    if (group.indexes.some((i) => isConversationTurn(messages[i]!))) exchanges += 1;
     if (exchanges > exchangeLimit && !selected.has(group)) break;
     if (selected.has(group)) continue;
     if (used + group.tokens > available) break;

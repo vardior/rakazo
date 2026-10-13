@@ -49,6 +49,7 @@ export type CompactedHistoryMessage = {
   createdAt?: string;
   seq: number;
   role: "user" | "assistant" | "system";
+  botId?: string;
   content: string;
 };
 

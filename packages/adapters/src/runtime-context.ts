@@ -42,6 +42,41 @@ function text(message: Message): string {
     .map((block) => block.text)
     .join("\n");
 }
+export function quotedAssistantText(content: string): string {
+  return `Assistant: ${content}`;
+}
+function isPriorReply(message: Message): boolean {
+  return (
+    message.role === "assistant" && Boolean((message as Message & OriginalMetadata).rakazoHistory)
+  );
+}
+function quotedPriorReply(message: Message): Message {
+  const { rakazoMessageId, rakazoCreatedAt } = message as Message & OriginalMetadata;
+  const quoted: Message & OriginalMetadata = {
+    role: "user",
+    content: quotedAssistantText(text(message)),
+    timestamp: message.timestamp,
+    rakazoHistory: true,
+    rakazoMessageId,
+    rakazoCreatedAt,
+  };
+  return quoted;
+}
+function withUserLedTurns(ctx: Context): Context {
+  let previousRole: Message["role"] | undefined;
+  const messages = ctx.messages.map((message) => {
+    if (message.role === "system") return message;
+    const sent =
+      isPriorReply(message) && (previousRole === undefined || previousRole === "assistant")
+        ? quotedPriorReply(message)
+        : message;
+    previousRole = sent.role;
+    return sent;
+  });
+  return messages.every((message, index) => message === ctx.messages[index])
+    ? ctx
+    : { ...ctx, messages };
+}
 function snapshot(content: string, maxLength = 400): string {
   if (content.length <= maxLength) return content;
   return `${content.slice(0, Math.floor(maxLength * 0.7))}\n[… snapshot shortened; read original …]\n${content.slice(-Math.floor(maxLength * 0.3))}`;
@@ -108,7 +143,7 @@ export function createRuntimeContextPolicy(
     return request.history.find(
       (stored) =>
         content === stored.content ||
-        (stored.role === "assistant" && content === `Assistant: ${stored.content}`),
+        (stored.role === "assistant" && content === quotedAssistantText(stored.content)),
     );
   }
   function navigation(ids: string[]): Message | undefined {
@@ -214,7 +249,7 @@ export function createRuntimeContextPolicy(
           truncatedToolResults: 0,
           observedReuse: null,
         };
-        return ctx;
+        return withUserLedTurns(ctx);
       }
       // Metadata distinguishes repeated historical requests from the live request.
       let messages = projected?.messages ?? [...ctx.messages];
@@ -408,7 +443,7 @@ export function createRuntimeContextPolicy(
         truncatedToolResults: Math.max(selected.truncatedToolResults, shortenedStructuredResults),
         observedReuse: null,
       };
-      return prepared;
+      return withUserLedTurns(prepared);
     },
     onUsage(usage: AgentUsage | null | undefined) {
       if (!pending) return;
