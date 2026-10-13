@@ -438,9 +438,27 @@ describe("runReplyGuidance", () => {
     expect(runPromotesMidTurnNarration("routine")).toBe(false);
     expect(runReplyGuidance("routine")).toBe(ROUTINE_SILENT_REPLY_GUIDANCE);
     expect(runReplyGuidance("routine")).not.toContain("progress updates with message_user");
-    expect(runReplyGuidance("routine")).toContain(NO_RESPONSE);
+    expect(runReplyGuidance("routine")).toContain("watch, check, or monitor");
+    expect(runReplyGuidance("routine")).toContain(
+      "stay silent by default when there is nothing new worth the user's attention",
+    );
+    expect(runReplyGuidance("routine")).toContain(
+      "Always deliver requested scheduled reports or summaries",
+    );
+    expect(runReplyGuidance("routine")).toContain(
+      "always report or confirm each run when the routine's prompt explicitly asks for it",
+    );
     expect(runReplyGuidance("routine")).toContain(`exactly ${NO_RESPONSE}`);
     expect(runReplyGuidance("routine")).not.toContain("Leave the final reply empty");
+  });
+
+  it("applies routine silence to webhook runs while keeping ticket reporting on the board", () => {
+    expect(runReplyGuidance("webhook")).toBe(ROUTINE_SILENT_REPLY_GUIDANCE);
+    expect(runAllowsSilentEmpty("webhook")).toBe(true);
+    expect(runPromotesMidTurnNarration("webhook")).toBe(false);
+    expect(completionMarksUnread("webhook", "")).toBe(false);
+    expect(completionMarksUnread("webhook", "Price dropped.")).toBe(true);
+    expect(runReplyGuidance("tickets")).toBe(TICKET_SILENT_REPLY_GUIDANCE);
   });
 
   it("gives the creation intro the profile fields its prompt asks about", () => {
@@ -487,6 +505,9 @@ describe("runReplyGuidance", () => {
 describe("subagentMarksUnread", () => {
   it("ignores completed routine activity but preserves failures and manual activity", () => {
     expect(subagentMarksUnread("routine", "completed")).toBe(false);
+    expect(subagentMarksUnread("webhook", "running")).toBe(false);
+    expect(subagentMarksUnread("webhook", "completed")).toBe(false);
+    expect(subagentMarksUnread("webhook", "failed")).toBe(true);
     expect(subagentMarksUnread("routine", "failed")).toBe(true);
     expect(subagentMarksUnread("user", "completed")).toBe(true);
     expect(subagentMarksUnread("bot_message", "completed")).toBe(false);

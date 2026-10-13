@@ -7084,8 +7084,6 @@ export function createRunExecutor(deps: ExecutorDeps) {
           terminalCheckpointComplete = true;
 
           flushPendingTools();
-          // Only routine runs are instructed to emit NO_RESPONSE. Other
-          // allowSilentEmpty wakes (FYI, messaging) may finish truly empty.
           const silentReply = runAllowsSilentEmpty(run.trigger)
             ? stripNoResponseReply(assembled, messageSegments)
             : { assembled, blocks: messageSegments };
@@ -7919,14 +7917,14 @@ export { isExactNoResponse, NO_RESPONSE, stripNoResponseReply };
 export const LONG_WORK_PROGRESS_GUIDANCE =
   "During long work, send a few short progress updates with message_user so the user can see what you are doing. Keep them brief and high-signal (a sentence or two, not a dump). Do not narrate every tool call. Thinking stays private. message_user is capped at 500 characters and will be silently cut off if you exceed it \u2014 never put your final answer, a report, or any long-form deliverable in it. Always put the complete final answer in your normal reply, never split across message_user calls, and never assume a message_user update already delivered your content.";
 
-export const ROUTINE_SILENT_REPLY_GUIDANCE = `If this routine's prompt says to stay silent when there is nothing to report, the entire final assistant reply must be exactly ${NO_RESPONSE} — no surrounding prose, no variants, no progress updates, no all-clear, and no meta note that you are staying silent. Do not call message_user unless you have something to report.`;
+export const ROUTINE_SILENT_REPLY_GUIDANCE = `For a routine or webhook run whose purpose is to watch, check, or monitor, stay silent by default when there is nothing new worth the user's attention. Also honor an explicit request to stay silent when there is nothing to report. Always deliver requested scheduled reports or summaries, and always report or confirm each run when the routine's prompt explicitly asks for it. When staying silent, the entire final assistant reply must be exactly ${NO_RESPONSE} — no surrounding prose, no variants, no progress updates, no all-clear, and no meta note that you are staying silent. Do not call message_user unless you have something to report.`;
 
 export function runAllowsSilentEmpty(trigger: string): boolean {
-  return trigger === "routine" || isBackgroundRunTrigger(trigger);
+  return trigger === "routine" || trigger === "webhook" || isBackgroundRunTrigger(trigger);
 }
 
 export function runPromotesMidTurnNarration(trigger: string): boolean {
-  return trigger !== "routine" && !isBackgroundRunTrigger(trigger);
+  return !runAllowsSilentEmpty(trigger);
 }
 
 export const TICKET_SILENT_REPLY_GUIDANCE =
@@ -8018,7 +8016,7 @@ export function completionMarksUnread(
 ): boolean {
   if (trigger === "bot_message") return userFacingPeerReply;
   if (isBackgroundRunTrigger(trigger)) return false;
-  return trigger !== "routine" || Boolean(text);
+  return !runAllowsSilentEmpty(trigger) || Boolean(text);
 }
 
 export function missingTurnImagesInstruction(
@@ -8068,7 +8066,7 @@ export function subagentMarksUnread(
   return (
     status === "failed" ||
     (trigger === "bot_message" && userFacingPeerReply) ||
-    (trigger !== "routine" && trigger !== "bot_message")
+    (!runAllowsSilentEmpty(trigger) && trigger !== "bot_message")
   );
 }
 

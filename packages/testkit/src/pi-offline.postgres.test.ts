@@ -6,6 +6,7 @@ import { ComposioEmulator } from "@rakazo/adapters";
 import { describe, expect, it } from "vitest";
 import { discardBotIntroRun } from "./discard-bot-intro.js";
 import { sessionCookieHeader } from "./index.js";
+import type { ModelEmulatorRequest } from "./model-emulator.js";
 import { startModelEmulator } from "./model-emulator.js";
 
 type App = { request: (input: string, init?: RequestInit) => Promise<Response> };
@@ -13,8 +14,32 @@ const databaseAvailable = process.env.VERIFY_DATABASE === "1" && Boolean(process
 const fixtureOrigin = "http://127.0.0.1:5173";
 
 describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
-  it("uses a saved model connection and the real executor to persist a file and completed run", async () => {
+  it("persists interactive results and delivers routine reports while keeping empty monitoring silent", async () => {
     const fixtureKey = "offline-product-fixture-key";
+    const routineCases: Array<{
+      prompt: string;
+      reply: string;
+      unread: boolean;
+      webhook?: boolean;
+    }> = [
+      { prompt: "Check my inbox for anything from the bank.", reply: "NO_RESPONSE", unread: false },
+      {
+        prompt: "Every morning send me my agenda.",
+        reply: "Your agenda is empty today.",
+        unread: true,
+      },
+      {
+        prompt: "Watch for price drops and confirm each run even if nothing changed.",
+        reply: "No price drops this run.",
+        unread: true,
+      },
+      {
+        prompt: "Watch this page for price drops.",
+        reply: "NO_RESPONSE",
+        unread: false,
+        webhook: true,
+      },
+    ];
     const model = await startModelEmulator({
       apiKey: fixtureKey,
       steps: [
@@ -57,6 +82,29 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
           },
           response: { type: "text", text: "Saved notes/result.txt." },
         },
+        ...routineCases.map(({ prompt, reply }) => ({
+          expect(request: ModelEmulatorRequest) {
+            const instructions = String(
+              request.messages.find((message) => message.role === "system")?.content,
+            );
+            expect(JSON.stringify(request.messages)).toContain(prompt);
+            expect(instructions).toContain("watch, check, or monitor");
+            expect(instructions).toContain(
+              "stay silent by default when there is nothing new worth the user's attention",
+            );
+            expect(instructions).toContain(
+              "Always deliver requested scheduled reports or summaries",
+            );
+            expect(instructions).toContain(
+              "always report or confirm each run when the routine's prompt explicitly asks for it",
+            );
+            expect(instructions).toContain("exactly NO_RESPONSE");
+            expect(instructions).toContain(
+              "Do not call message_user unless you have something to report.",
+            );
+          },
+          response: { type: "text" as const, text: reply },
+        })),
       ],
     });
     const dataDir = await mkdtemp(path.join(tmpdir(), "rakazo-offline-product-"));
@@ -126,7 +174,6 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
           { timeout: 15_000, interval: 100 },
         )
         .toBe("completed");
-      model.assertComplete();
       const file = await rpc<{ content: string }>(handles.app, cookie, "computer/readFile", {
         botId: bot.id,
         path: "notes/result.txt",
@@ -170,6 +217,70 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
           exitCode: 0,
         }),
       ]);
+      const threadRecord = await handles.prisma.thread.findFirstOrThrow({
+        where: { botId: bot.id },
+      });
+      for (const { prompt, reply, unread, webhook } of routineCases) {
+        await handles.prisma.thread.update({
+          where: { id: threadRecord.id },
+          data: { unread: false },
+        });
+        const routine = await rpc<{ id: string }>(handles.app, cookie, "routines/create", {
+          botId: bot.id,
+          name: "Routine fixture",
+          prompt,
+          crons: ["0 9 * * *"],
+          timezone: "UTC",
+          notify: false,
+          active: Boolean(webhook),
+          webhookEnabled: Boolean(webhook),
+        });
+        let tested: { runId: string };
+        if (webhook) {
+          const hook = await rpc<{ secret: string; path: string }>(
+            handles.app,
+            cookie,
+            "bots/rotateWebhookSecret",
+            { botId: bot.id },
+          );
+          const response = await handles.app.request(hook.path, {
+            method: "POST",
+            headers: { "content-type": "application/json", authorization: `Bearer ${hook.secret}` },
+            body: JSON.stringify({ price: 100 }),
+          });
+          expect(response.status).toBe(200);
+          tested = (await response.json()) as { runId: string };
+        } else {
+          tested = await rpc<{ runId: string }>(handles.app, cookie, "routines/testRun", {
+            routineId: routine.id,
+          });
+        }
+        await expect
+          .poll(
+            async () => {
+              const run = await handles.prisma.run.findUniqueOrThrow({
+                where: { id: tested.runId },
+              });
+              if (run.status === "failed") model.assertComplete();
+              return run.status;
+            },
+            { timeout: 15_000, interval: 100 },
+          )
+          .toBe("completed");
+        const completedThread = await handles.prisma.thread.findUniqueOrThrow({
+          where: { id: threadRecord.id },
+        });
+        expect(completedThread.unread).toBe(unread);
+        const replies = await handles.prisma.message.findMany({
+          where: { runId: tested.runId, role: "bot" },
+        });
+        if (unread) {
+          expect(JSON.stringify(replies)).toContain(reply);
+        } else {
+          expect(replies).toEqual([]);
+        }
+      }
+      model.assertComplete();
     } finally {
       try {
         await stop?.();
@@ -178,7 +289,7 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
         await rm(dataDir, { recursive: true, force: true });
       }
     }
-  }, 30_000);
+  }, 60_000);
 });
 
 async function rpc<T>(
