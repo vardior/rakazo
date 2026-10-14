@@ -119,7 +119,7 @@ describe("finalizeRun", () => {
           leaseOwner: "worker-1",
           leaseFence: 1,
           outcome: "failed",
-          error: "failed",
+          error: "terminated",
         },
         { publish } as never,
       ),

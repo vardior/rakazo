@@ -99,7 +99,7 @@ it("keeps the notice and Retry available when the RPC fails", async () => {
           target={{ groupId: "group" }}
           block={{
             kind: "text",
-            text: "I didn't finish because something went wrong.",
+            text: "I didn't finish because the connection dropped.",
             runFailure: { runId: "run" },
           }}
           canRetry

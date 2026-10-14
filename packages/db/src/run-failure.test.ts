@@ -10,7 +10,6 @@ describe("failed run context", () => {
     ["503 Service Unavailable", "the model provider is unavailable"],
     ["terminated", "the connection dropped"],
     ["WebSocket closed 1006", "the connection dropped"],
-    ["Private internal error details", "something went wrong"],
   ])("uses a plain reason for %s without exposing the raw error", (error, reason) => {
     expect(failedRunBlocks("failed-run", error)).toEqual([
       {
@@ -19,6 +18,10 @@ describe("failed run context", () => {
         runFailure: { runId: "failed-run" },
       },
     ]);
+  });
+
+  it("leaves other failures to the run error", () => {
+    expect(failedRunBlocks("failed-run", "No model is connected")).toEqual([]);
   });
 
   it("distinguishes completed tools from calls whose side effects are unknown", () => {

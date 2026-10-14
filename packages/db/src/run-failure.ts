@@ -9,8 +9,10 @@ export function failedRunBlocks(runId: string, error: string): MessageBlock[] {
           error,
         )
       ? "the connection dropped"
-      : "something went wrong";
-  return [{ kind: "text", text: `I didn't finish because ${reason}.`, runFailure: { runId } }];
+      : undefined;
+  return reason
+    ? [{ kind: "text", text: `I didn't finish because ${reason}.`, runFailure: { runId } }]
+    : [];
 }
 
 const PRIOR_ATTEMPT_START = "\n\n<prior-attempts>\n";
