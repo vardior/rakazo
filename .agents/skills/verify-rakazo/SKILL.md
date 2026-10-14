@@ -60,8 +60,11 @@ Fixture model markers, placed in the user's message:
 | none | Replies at once: `Fixture saw N new user message(s): «…»` |
 | `[[slow-final:S]]` | Streams a final answer (no tools) over S seconds, default 20 |
 | `[[slow-tool:S]]` | Streams for S seconds (default 10), then calls `message_user`; the next turn replies as above |
+| `[[tool:NAME:{json}]]` | Calls tool NAME with those JSON arguments, once per marker text; later turns reply as above |
+| `[[fail:N:overloaded]]` | The first N calls for this message get HTTP 503 "servers are currently overloaded" |
+| `[[fail:N:terminated]]` | The first N calls for this message drop the connection with no output |
 
-`$C fixture-log` lists every model call with `start`/`end` timestamps, the plan, the request's role sequence (`roles`, one letter per message, for example `suau`), and the user messages that call received. A call the client hung up on, after a steer or Stop, ends with an `abort` record holding the text streamed so far. `$C logs <api|worker|web|fixture|browser>` tails a process log. The run's database is reachable with `docker exec rakazo-verify-<id>-pg psql -U rakazo -d rakazo`.
+`$C fixture-log` lists every model call with `start`/`end` timestamps, the plan, the names of the tools offered (`tools`), the request's role sequence (`roles`, one letter per message, for example `suau`), and the user messages that call received. A call the client hung up on, after a steer or Stop, ends with an `abort` record holding the text streamed so far. `$C logs <api|worker|web|fixture|browser>` tails a process log. The run's database is reachable with `docker exec rakazo-verify-<id>-pg psql -U rakazo -d rakazo`.
 
 `bin/scenario-steering.sh <bundle>` runs the steering scenarios from `features/steering.md` end to end and writes their artifacts into the bundle.
 

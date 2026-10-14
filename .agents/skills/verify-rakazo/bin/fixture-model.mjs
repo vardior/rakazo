@@ -6,6 +6,8 @@ const port = Number(process.env.FIXTURE_PORT ?? 0);
 const logPath = process.env.FIXTURE_LOG;
 const modelId = process.env.FIXTURE_MODEL_ID ?? "verify-fixture";
 let requestCount = 0;
+const failuresServed = new Map();
+const toolsServed = new Set();
 
 function textOf(content) {
   if (typeof content === "string") return content;
@@ -36,7 +38,17 @@ function choosePlan(messages) {
   const latestIndex = messages.findLastIndex((message) => message.role === "user");
   const latest = textOf(messages[latestIndex]?.content);
   const answeredByTool = messages.slice(latestIndex + 1).some((message) => message.role === "tool");
+  const fail = latest.match(/\[\[fail:(\d+):(overloaded|terminated)\]\]/);
+  if (fail && (failuresServed.get(latest) ?? 0) < Number(fail[1])) {
+    failuresServed.set(latest, (failuresServed.get(latest) ?? 0) + 1);
+    return { kind: fail[2] };
+  }
   if (!answeredByTool) {
+    const tool = latest.match(/\[\[tool:([a-z_]+)(?::(\{.*?\}))?\]\]/);
+    if (tool && !toolsServed.has(tool[0])) {
+      toolsServed.add(tool[0]);
+      return { kind: "tool", name: tool[1], args: tool[2] ?? "{}" };
+    }
     const finalSeconds = markerIn(latest, "slow-final", 20);
     if (finalSeconds !== null) return { kind: "slow-final", seconds: finalSeconds };
     const toolSeconds = markerIn(latest, "slow-tool", 10);
@@ -89,11 +101,21 @@ const server = createServer(async (request, response) => {
   record({
     phase: "start",
     plan: plan.kind,
-    tools: (body.tools ?? []).length,
+    tools: (body.tools ?? []).map((tool) => tool.function?.name ?? tool.name),
     roles: messages.map((message) => message.role[0]).join(""),
     newUserMessages: fresh.map(condensed),
   });
 
+  if (plan.kind === "overloaded") {
+    response.writeHead(503, { "content-type": "application/json" });
+    response.end(
+      JSON.stringify({
+        error: { message: "Our servers are currently overloaded. Please try again later." },
+      }),
+    );
+    record({ phase: "end", reply: "503 overloaded" });
+    return;
+  }
   let streamed = "";
   response.on("close", () => {
     if (!response.writableFinished) record({ phase: "abort", streamed: condensed(streamed) });
@@ -116,7 +138,25 @@ const server = createServer(async (request, response) => {
   emit({ role: "assistant" });
 
   let reply;
-  if (plan.kind === "slow-final") {
+  if (plan.kind === "terminated") {
+    record({ phase: "end", reply: "connection dropped" });
+    response.socket.destroy();
+    return;
+  }
+  if (plan.kind === "tool") {
+    reply = `calls ${plan.name}`;
+    emit({
+      tool_calls: [
+        {
+          index: 0,
+          id: `fixture-call-${n}`,
+          type: "function",
+          function: { name: plan.name, arguments: plan.args },
+        },
+      ],
+    });
+    emit({}, "tool_calls");
+  } else if (plan.kind === "slow-final") {
     reply = `Slow final answer. ${ackText(fresh)}`;
     await streamWords(emit, reply, plan.seconds, closed);
     if (closed()) return;
