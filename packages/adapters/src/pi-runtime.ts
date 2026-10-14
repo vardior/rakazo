@@ -281,11 +281,6 @@ export class PiAgentRuntime implements AgentRuntime {
           request.botId,
           request.sourceMessageId,
         );
-        const initialPrompt = steeringAfterPrompt.length
-          ? `${request.prompt}\n\nAdditional user context:\n${steeringAfterPrompt
-              .map((item) => item.text)
-              .join("\n")}`
-          : request.prompt;
         const systemPrompt =
           request.instructions ||
           (toolDefs.some((tool) => tool.name === "computer_observe")
@@ -402,14 +397,7 @@ export class PiAgentRuntime implements AgentRuntime {
         const isInterruptedReply = (message: AgentMessage) =>
           interrupting && message.role === "assistant" && message.stopReason === "aborted";
         const steerWith = (steering: AgentSteeringMessage[]) => {
-          for (const item of steering) {
-            const images = toPiImages(item.images);
-            agent.steer({
-              role: "user",
-              content: images.length ? [{ type: "text", text: item.text }, ...images] : item.text,
-              timestamp: Date.now(),
-            });
-          }
+          for (const item of steering) agent.steer(userMessage(item.text, item.images));
         };
         const replyCanBeSteered = (message: AgentMessage) =>
           message.role === "assistant" &&
@@ -670,12 +658,16 @@ export class PiAgentRuntime implements AgentRuntime {
 
         // No "working…" progress push here: the shell already renders its own
         // placeholder while a run is active, and emitting one here shows two.
-        const images = toPiImages([
-          ...(request.currentTurnImages ?? []),
-          ...steeringAfterPrompt.flatMap((item) => item.images ?? []),
-        ]);
         try {
-          await agent.prompt(initialPrompt, images?.length ? images : undefined);
+          if (steeringAfterPrompt.length) {
+            await agent.prompt([
+              userMessage(request.prompt, request.currentTurnImages),
+              ...steeringAfterPrompt.map((item) => userMessage(item.text, item.images)),
+            ]);
+          } else {
+            const images = toPiImages(request.currentTurnImages);
+            await agent.prompt(request.prompt, images.length ? images : undefined);
+          }
           await agent.waitForIdle();
           while (
             heldSteering.length > 0 &&
@@ -793,6 +785,15 @@ export class PiAgentRuntime implements AgentRuntime {
       if (running.get(request.runId) === active) running.delete(request.runId);
     }
   }
+}
+
+function userMessage(text: string, images: AgentRunRequest["currentTurnImages"]): AgentMessage {
+  const content = toPiImages(images);
+  return {
+    role: "user",
+    content: content.length ? [{ type: "text", text }, ...content] : text,
+    timestamp: Date.now(),
+  };
 }
 
 function toPiImages(images: AgentRunRequest["currentTurnImages"]) {

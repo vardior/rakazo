@@ -43,7 +43,7 @@ const fakeAgentState = vi.hoisted(() => ({
   steeredMessages: [] as unknown[],
   followUpMessages: [] as unknown[],
   initialMessages: [] as unknown[],
-  promptInputs: [] as string[],
+  promptInputs: [] as unknown[],
   promptImages: [] as unknown[][],
   toolResult: undefined as unknown,
 }));
@@ -77,7 +77,7 @@ vi.mock("@earendil-works/pi-agent-core", () => ({
       this.listeners.push(listener);
     }
 
-    async prompt(prompt: string, images?: unknown[]) {
+    async prompt(prompt: unknown, images?: unknown[]) {
       fakeAgentState.promptInputs.push(prompt);
       fakeAgentState.promptImages.push(images ?? []);
       if (fakeAgentState.mode === "empty" || fakeAgentState.mode === "two-boundaries") {
@@ -595,9 +595,18 @@ describe("Pi connector tool dispatch", () => {
       // Exhaust the runtime event stream.
     }
 
-    expect(fakeAgentState.promptInputs).toHaveLength(1);
+    expect(fakeAgentState.promptInputs).toEqual([
+      [
+        {
+          role: "user",
+          content: "Respond to the user's steering context.",
+          timestamp: expect.any(Number),
+        },
+        { role: "user", content: steering[0]!.text, timestamp: expect.any(Number) },
+        { role: "user", content: steering[1]!.text, timestamp: expect.any(Number) },
+      ],
+    ]);
     for (const item of steering) {
-      expect(fakeAgentState.promptInputs[0]?.split(item.text)).toHaveLength(2);
       expect(JSON.stringify(fakeAgentState.initialMessages)).not.toContain(item.text);
     }
     expect(fakeAgentState.steeredMessages).toEqual([]);
@@ -658,8 +667,18 @@ describe("Pi connector tool dispatch", () => {
       // Exhaust the runtime event stream.
     }
 
-    expect(fakeAgentState.promptImages).toEqual([
-      [{ type: "image", data: "AQID", mimeType: "image/png" }],
+    expect(fakeAgentState.promptInputs).toEqual([
+      [
+        { role: "user", content: "continue", timestamp: expect.any(Number) },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Inspect the first image." },
+            { type: "image", data: "AQID", mimeType: "image/png" },
+          ],
+          timestamp: expect.any(Number),
+        },
+      ],
     ]);
     expect(fakeAgentState.steeredMessages).toContainEqual({
       role: "user",
