@@ -113,6 +113,7 @@ const SILENT_ALLOWED_TOOL_CONTINUATION_PROMPT =
 export const MISSING_TOOL_FINAL_RESPONSE_ERROR =
   "The tools finished, but the model did not write a final answer. Rephrase the request and try again.";
 const DEFAULT_COMPUTER_SCREENSHOTS_TO_KEEP = 2;
+const COMPUTER_SCREENSHOT_PRUNE_THRESHOLD = 6;
 // Reasoning-capable models must not start at "off": for OpenRouter, pi-ai maps
 // that to reasoning.effort "none", which 400s on endpoints that mandate
 // reasoning (e.g. google/gemini-3.7-flash). Keep a real level when model.reasoning
@@ -1914,6 +1915,7 @@ const PAGE_STATE_TOOL_NAMES = new Set([
   "computer_act",
 ]);
 const DEFAULT_PAGE_STATE_RESULTS_TO_KEEP = 3;
+const PAGE_STATE_PRUNE_THRESHOLD = 9;
 /**
  * Only results that actually carry a page (a snapshot tree, an observation) are worth trimming
  * or counting. Navigation confirmations, action receipts and errors are a line or two: trimming
@@ -1923,35 +1925,40 @@ const STALE_PAGE_STATE_MIN_CHARS = 1_000;
 const STALE_PAGE_STATE_NOTE =
   "[Earlier page state trimmed to save context. Facts you still need from that page should already be in your notes or tracker; otherwise take a fresh snapshot.]";
 
-/**
- * Replace all but the most recent large page-state tool results with a short note. Runs on
- * every request from the untransformed agent history, so the same history always trims the same
- * way and the cached prompt prefix stays stable up to the newest trimmed result.
- */
 export function pruneStalePageStateContext(
   messages: AgentMessage[],
   keep = DEFAULT_PAGE_STATE_RESULTS_TO_KEEP,
 ): AgentMessage[] {
-  let remaining = Math.max(0, Math.floor(keep));
-  let transformed: AgentMessage[] | undefined;
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
+  const pageIndices: number[] = [];
+  for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index];
     if (message?.role !== "toolResult" || !PAGE_STATE_TOOL_NAMES.has(message.toolName)) continue;
     // Failures are diagnostics, not fresh page state, even when their text is large.
     const returnedError = (message.details as { error?: unknown } | undefined)?.error;
     if (message.isError || (returnedError !== undefined && returnedError !== null)) continue;
     if (textLength(message) < STALE_PAGE_STATE_MIN_CHARS) continue;
-    if (remaining > 0) {
-      remaining -= 1;
-      continue;
-    }
-    transformed ??= [...messages];
+    pageIndices.push(index);
+  }
+  const pruneCount = batchPruneCount(pageIndices.length, keep, PAGE_STATE_PRUNE_THRESHOLD);
+  if (pruneCount === 0) return messages;
+  const transformed = [...messages];
+  for (const index of pageIndices.slice(0, pruneCount)) {
+    const message = messages[index] as Extract<AgentMessage, { role: "toolResult" }>;
     transformed[index] = {
       ...message,
-      content: [{ type: "text", text: STALE_PAGE_STATE_NOTE }],
+      content: [
+        { type: "text", text: STALE_PAGE_STATE_NOTE },
+        ...message.content.filter((part) => part.type === "image"),
+      ],
     };
   }
-  return transformed ?? messages;
+  return transformed;
+}
+
+function batchPruneCount(total: number, keep: number, threshold: number): number {
+  const retained = Math.max(0, Math.floor(keep));
+  const batchSize = Math.max(retained, Math.floor(threshold)) + 1 - retained;
+  return Math.max(0, Math.floor((total - retained) / batchSize)) * batchSize;
 }
 
 function textLength(message: Extract<AgentMessage, { role: "toolResult" }>): number {
@@ -1962,7 +1969,6 @@ function textLength(message: Extract<AgentMessage, { role: "toolResult" }>): num
   return total;
 }
 
-/** Keep recent visual state while respecting an optional model image budget. */
 export function pruneComputerScreenshotContext(
   messages: AgentMessage[],
   maxImagesPerPrompt?: number,
@@ -1973,7 +1979,7 @@ export function pruneComputerScreenshotContext(
       : Number.isFinite(maxImagesPerPrompt)
         ? Math.max(0, Math.floor(maxImagesPerPrompt))
         : DEFAULT_COMPUTER_SCREENSHOTS_TO_KEEP;
-  let remaining = imageLimit ?? DEFAULT_COMPUTER_SCREENSHOTS_TO_KEEP;
+  let available = COMPUTER_SCREENSHOT_PRUNE_THRESHOLD;
   if (imageLimit !== undefined) {
     const nonScreenshotImages = messages.reduce(
       (count, message) =>
@@ -1985,17 +1991,25 @@ export function pruneComputerScreenshotContext(
         `The configured model image limit is ${imageLimit}, but the prompt contains ${nonScreenshotImages} non-screenshot images.`,
       );
     }
-    remaining = imageLimit - nonScreenshotImages;
+    available = Math.min(available, imageLimit - nonScreenshotImages);
   }
+  const screenshots = messages.filter(isComputerScreenshotMessage);
+  const screenshotImages = screenshots.reduce(
+    (count, message) => count + imagePartCount(message),
+    0,
+  );
+  let remainingToPrune = batchPruneCount(
+    screenshotImages,
+    Math.min(DEFAULT_COMPUTER_SCREENSHOTS_TO_KEEP, available),
+    available,
+  );
+  if (remainingToPrune === 0) return messages;
   let transformed: AgentMessage[] | undefined;
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
+  for (let index = 0; index < messages.length && remainingToPrune > 0; index += 1) {
     const message = messages[index];
     if (!isComputerScreenshotMessage(message)) continue;
     const images = imagePartCount(message);
-    if (remaining >= images) {
-      remaining -= images;
-      continue;
-    }
+    remainingToPrune -= images;
     transformed ??= [...messages];
     transformed[index] = {
       ...message,

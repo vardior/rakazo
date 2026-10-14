@@ -167,7 +167,7 @@ describe("Pi computer tool dispatch", () => {
     timestamp: 1,
   });
 
-  it("trims page-state results older than the three most recent", () => {
+  it("prunes ten large page results to three and preserves the prefix until the next batch", () => {
     const messages = [
       { role: "user" as const, content: "find the cheapest coffee", timestamp: 1 },
       pageResult("s1", "browser_snapshot"),
@@ -183,7 +183,13 @@ describe("Pi computer tool dispatch", () => {
       pageResult("s3", "computer_observe"),
       pageResult("s4", "browser_snapshot"),
       pageResult("s5", "browser_navigate"),
+      ...["s6", "s7", "s8", "s9", "s10"].map((id) => pageResult(id, "browser_snapshot")),
     ];
+
+    for (let count = 1; count < messages.length; count += 1) {
+      const prefix = messages.slice(0, count);
+      expect(pruneStalePageStateContext(prefix)).toBe(prefix);
+    }
 
     const pruned = pruneStalePageStateContext(messages);
     const texts = pruned.map((message) => {
@@ -198,15 +204,32 @@ describe("Pi computer tool dispatch", () => {
       expect.stringContaining("trimmed to save context"),
       expect.stringContaining("trimmed to save context"),
       "tracker contents",
-      expect.stringContaining("page s3"),
-      expect.stringContaining("page s4"),
-      expect.stringContaining("page s5"),
+      ...Array.from({ length: 5 }, () => expect.stringContaining("trimmed to save context")),
+      expect.stringContaining("page s8"),
+      expect.stringContaining("page s9"),
+      expect.stringContaining("page s10"),
     ]);
     // The original history is untouched, so the next request trims identically.
     expect(messages[1]?.content).toEqual([
       { type: "text", text: expect.stringContaining("page s1") },
     ]);
     expect(pruned[1]).toMatchObject({ toolCallId: "s1", toolName: "browser_snapshot" });
+    for (let count = 11; count <= 16; count += 1) {
+      messages.push(pageResult(`s${count}`, "browser_snapshot"));
+      expect(JSON.stringify(pruneStalePageStateContext(messages).slice(0, pruned.length))).toBe(
+        JSON.stringify(pruned),
+      );
+    }
+    messages.push(pageResult("s17", "browser_snapshot"));
+    const nextBatch = pruneStalePageStateContext(messages);
+    expect(nextBatch.slice(-3)).toEqual(messages.slice(-3));
+    expect(
+      nextBatch.filter(
+        (message) =>
+          "content" in message &&
+          JSON.stringify(message.content).includes("trimmed to save context"),
+      ),
+    ).toHaveLength(14);
   });
 
   it("neither trims nor counts small page-state results such as errors and receipts", () => {
@@ -220,11 +243,16 @@ describe("Pi computer tool dispatch", () => {
 
     const pruned = pruneStalePageStateContext(messages);
     expect(pruned).toBe(messages);
-    expect(pruneStalePageStateContext(messages, 2)[0]).toMatchObject({
+    expect(pruneStalePageStateContext(messages, 2)).toBe(messages);
+    const aboveThreshold = [
+      ...messages,
+      ...Array.from({ length: 7 }, (_, index) => pageResult(`extra-${index}`, "browser_snapshot")),
+    ];
+    expect(pruneStalePageStateContext(aboveThreshold, 2)[0]).toMatchObject({
       toolCallId: "s1",
       content: [{ type: "text", text: expect.stringContaining("trimmed to save context") }],
     });
-    expect(pruneStalePageStateContext(messages, 2).slice(1, 3)).toEqual(messages.slice(1, 3));
+    expect(pruneStalePageStateContext(aboveThreshold, 2).slice(1, 3)).toEqual(messages.slice(1, 3));
   });
 
   it("returns the same history when nothing is stale", () => {
@@ -239,9 +267,7 @@ describe("Pi computer tool dispatch", () => {
       details: kind === "returned" ? { error: "action failed" } : undefined,
     };
     const messages = [
-      pageResult("s1", "browser_snapshot"),
-      pageResult("s2", "computer_observe"),
-      pageResult("s3", "browser_snapshot"),
+      ...Array.from({ length: 9 }, (_, index) => pageResult(`s${index}`, "browser_snapshot")),
       failure,
     ];
     expect(pruneStalePageStateContext(messages)).toBe(messages);
@@ -257,41 +283,64 @@ describe("Pi computer tool dispatch", () => {
       };
       const messages = [
         failure,
-        ...["s1", "s2", "s3", "s4"].map((id) => pageResult(id, "browser_snapshot")),
+        ...Array.from({ length: 10 }, (_, index) => pageResult(`s${index}`, "browser_snapshot")),
       ];
       const pruned = pruneStalePageStateContext(messages);
       expect(pruned[0]).toBe(failure);
       expect(pruned[1]).toMatchObject({
-        toolCallId: "s1",
+        toolCallId: "s0",
         content: [{ type: "text", text: expect.stringContaining("trimmed to save context") }],
       });
-      expect(pruned.slice(2)).toEqual(messages.slice(2));
+      expect(pruned.slice(-3)).toEqual(messages.slice(-3));
       expect(messages[1]?.content).toEqual([
-        { type: "text", text: expect.stringContaining("page s1") },
+        { type: "text", text: expect.stringContaining("page s0") },
       ]);
     },
   );
 
-  it("keeps the two latest computer screenshots by default", () => {
-    const messages = ["frame-1", "frame-2", "frame-3"].map((frameId) => ({
+  it("prunes seven screenshots to two and preserves the prefix until the next batch", () => {
+    const frames = Array.from({ length: 12 }, (_, index) => ({
       role: "toolResult" as const,
-      toolCallId: frameId,
+      toolCallId: `frame-${index + 1}`,
       toolName: "computer_observe",
       content: [
-        { type: "text" as const, text: frameId },
-        { type: "image" as const, data: frameId, mimeType: "image/png" as const },
+        { type: "text" as const, text: `page ${index + 1} ${"x".repeat(1_200)}` },
+        { type: "image" as const, data: `frame-${index + 1}`, mimeType: "image/png" as const },
       ],
-      details: { frameId },
+      details: { frameId: `frame-${index + 1}` },
       isError: false,
       timestamp: 1,
     }));
 
+    for (let count = 1; count <= 6; count += 1) {
+      const messages = frames.slice(0, count);
+      expect(pruneComputerScreenshotContext(messages)).toBe(messages);
+    }
+    const messages = frames.slice(0, 7);
     const pruned = pruneComputerScreenshotContext(messages);
     expect(
       pruned.map((message) =>
         (message as (typeof messages)[number]).content.some((part) => part.type === "image"),
       ),
-    ).toEqual([false, true, true]);
+    ).toEqual([false, false, false, false, false, true, true]);
+    for (let count = 8; count <= 11; count += 1) {
+      expect(
+        JSON.stringify(pruneComputerScreenshotContext(frames.slice(0, count)).slice(0, 7)),
+      ).toBe(JSON.stringify(pruned));
+    }
+    expect(
+      pruneComputerScreenshotContext(frames).filter((message) =>
+        (message as (typeof frames)[number]).content.some((part) => part.type === "image"),
+      ),
+    ).toEqual(frames.slice(-2));
+    for (let count = 1; count < frames.length; count += 1) {
+      const transform = (length: number) =>
+        pruneComputerScreenshotContext(pruneStalePageStateContext(frames.slice(0, length)));
+      if (count + 1 === 7 || count + 1 === 10 || count + 1 === 12) continue;
+      expect(JSON.stringify(transform(count + 1).slice(0, count))).toBe(
+        JSON.stringify(transform(count)),
+      );
+    }
   });
 
   it("honors a model-specific one-image limit", () => {
@@ -396,7 +445,7 @@ describe("Pi computer tool dispatch", () => {
         .map((message) =>
           (message as (typeof messages)[number]).content.some((part) => part.type === "image"),
         ),
-    ).toEqual([false, true, true]);
+    ).toEqual([true, true, true]);
   });
 
   it("reuses the message array when no screenshot needs pruning", () => {
