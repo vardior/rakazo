@@ -337,7 +337,7 @@ const scenarios = [
       );
       const routine = psql(
         state,
-        `select r.status || ' ' || coalesce((select string_agg(a.status, ',' order by a."createdAt") from attempts a where a."runId" = r.id), '') from runs r where r.id = '${routineRun}'`,
+        `select r.status || ' ' || coalesce((select string_agg(a.status, ',' order by a."startedAt") from attempts a where a."runId" = r.id), '') from runs r where r.id = '${routineRun}'`,
       );
       const ownerFirst = Boolean(ownerAt && routineAt) && Number(ownerAt) < Number(routineAt);
       return {
