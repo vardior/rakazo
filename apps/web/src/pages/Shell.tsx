@@ -30,8 +30,10 @@ import {
   ATTACHMENT_MAX_BYTES,
   ATTACHMENT_MAX_COUNT,
   canReactToThreadMessage,
+  canRetryFailedRun,
   MESSAGE_REACTIONS,
   normalizeCreateBotProfile,
+  runFailureNotice,
 } from "@rakazo/contracts";
 import type { ComposerMention, SlashActionId } from "@rakazo/core";
 import {
@@ -283,6 +285,7 @@ import {
   ArtifactImage,
   ChartBlockView,
   ChoiceCard,
+  FailedRunNotice,
   McpApprovalCard,
 } from "./shell/message-cards";
 import { commitSpaceRename, sidebarGroupsForSpaces } from "./shell/space-sidebar";
@@ -5189,6 +5192,11 @@ const Transcript = memo(function Transcript({
                     <MessageView
                       artifactTarget={artifactTarget}
                       message={message}
+                      canRetryFailure={canRetryFailedRun(
+                        message,
+                        messages,
+                        workingBots.map((bot) => bot.botId ?? ""),
+                      )}
                       canAnswer={message.id === answerableAskMessageId}
                       onOpenBot={onOpenBot}
                       onOpenPeerMessages={onOpenPeerMessages}
@@ -6565,6 +6573,7 @@ const MessageView = memo(function MessageView({
   onSpeak,
   onOpenComputer,
   showToolActivity,
+  canRetryFailure,
 }: {
   artifactTarget: ArtifactTarget;
   canAnswer: boolean;
@@ -6585,6 +6594,7 @@ const MessageView = memo(function MessageView({
   onSpeak: () => void;
   onOpenComputer: (botId?: string) => void;
   showToolActivity: boolean;
+  canRetryFailure: boolean;
 }) {
   const { t } = useLingui();
   const isNarration =
@@ -6634,6 +6644,20 @@ const MessageView = memo(function MessageView({
       />
     </>
   );
+  const failure = runFailureNotice(message);
+  if (failure) {
+    return (
+      <>
+        {messageContext}
+        <FailedRunNotice
+          target={artifactTarget}
+          block={failure}
+          canRetry={canRetryFailure}
+          onRefresh={onRefresh}
+        />
+      </>
+    );
+  }
   if (isNarration) {
     if (visibleNarrationBlocks.length === 0) return null;
     if (isToolOnlyNarration(message.blocks, showToolActivity)) {

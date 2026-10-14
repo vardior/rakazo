@@ -8,7 +8,7 @@ import type {
   ThreadMessagePage,
   ThreadSnapshot,
 } from "@rakazo/contracts";
-import { RUN_TRIGGERS } from "@rakazo/contracts";
+import { RUN_TRIGGERS, runFailureNotice } from "@rakazo/contracts";
 import {
   isActive,
   isBackgroundRunTrigger,
@@ -116,6 +116,8 @@ export function threadRunError(
 ): string | null {
   const run = snapshot?.run;
   if (run?.status !== "failed" || dismissedRunIds?.has(run.id)) return null;
+  if (snapshot?.messages.some((message) => runFailureNotice(message)?.runFailure?.runId === run.id))
+    return null;
   return run.error ?? null;
 }
 

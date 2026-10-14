@@ -91,7 +91,8 @@ describe("finalizeRun", () => {
       },
       attempt: { updateMany: vi.fn(async () => ({ count: 1 })) },
       task: { updateMany: vi.fn(async () => ({ count: 1 })) },
-      thread: { update: vi.fn(async () => ({ nextEventSeq: 1 })) },
+      thread: { update: vi.fn(async () => ({ nextEventSeq: 1, nextMessageSeq: 1 })) },
+      message: { create: vi.fn(async () => ({ id: "failure-notice" })) },
       event: { create: createEvent, deleteMany: vi.fn(async () => ({ count: 0 })) },
       steeringMessage: {
         findMany: vi.fn(async () => []),
@@ -124,7 +125,16 @@ describe("finalizeRun", () => {
       ),
     ).resolves.toEqual({ continuationRunId: null });
     expect(transaction).toHaveBeenCalledTimes(2);
-    expect(createEvent).toHaveBeenCalledOnce();
+    expect(createEvent).toHaveBeenCalledTimes(2);
+    expect(createEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ type: "thread.message.created" }),
+      }),
+    );
+    expect(createEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ type: "run.failed" }) }),
+    );
+    expect(tx.message.create).toHaveBeenCalledOnce();
     expect(publish).toHaveBeenCalledOnce();
   });
 
@@ -143,7 +153,8 @@ describe("finalizeRun", () => {
         updateMany: vi.fn(async () => ({ count: 1 })),
         create: vi.fn(async () => ({ id: "task-reply" })),
       },
-      thread: { update: vi.fn(async () => ({ nextEventSeq: 1 })) },
+      thread: { update: vi.fn(async () => ({ nextEventSeq: 1, nextMessageSeq: 1 })) },
+      message: { create: vi.fn(async () => ({ id: "failure-notice" })) },
       event: {
         create: vi.fn(async () => ({ threadId: "thread-1", seq: 0 })),
         deleteMany: vi.fn(async () => ({ count: 0 })),
@@ -208,7 +219,8 @@ describe("finalizeRun", () => {
         updateMany: vi.fn(async () => ({ count: 1 })),
         create: vi.fn(async () => ({ id: "task-reply" })),
       },
-      thread: { update: vi.fn(async () => ({ nextEventSeq: 1 })) },
+      thread: { update: vi.fn(async () => ({ nextEventSeq: 1, nextMessageSeq: 1 })) },
+      message: { create: vi.fn(async () => ({ id: "failure-notice" })) },
       event: {
         create: vi.fn(async () => ({ threadId: "thread-1", seq: 0 })),
         deleteMany: vi.fn(async () => ({ count: 0 })),
@@ -285,7 +297,8 @@ describe("finalizeRun", () => {
         updateMany: vi.fn(async () => ({ count: 1 })),
         create: vi.fn(async () => ({ id: "task-reply" })),
       },
-      thread: { update: vi.fn(async () => ({ nextEventSeq: 1 })) },
+      thread: { update: vi.fn(async () => ({ nextEventSeq: 1, nextMessageSeq: 1 })) },
+      message: { create: vi.fn(async () => ({ id: "failure-notice" })) },
       event: {
         create: vi.fn(async () => ({ threadId: "thread-1", seq: 0 })),
         deleteMany: vi.fn(async () => ({ count: 0 })),

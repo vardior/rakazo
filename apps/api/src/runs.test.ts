@@ -1,7 +1,16 @@
+import { failedRunRetryPrompt } from "@rakazo/db";
 import { describe, expect, it } from "vitest";
 import { activityNotificationsEnabled, activityPromptSnippet } from "./runs.js";
 
 describe("run activity copy", () => {
+  it("keeps retry safety context out of the user-visible request preview", () => {
+    expect(
+      activityPromptSnippet({
+        trigger: "user",
+        prompt: failedRunRetryPrompt("Check the inbox", []),
+      }),
+    ).toBe("Check the inbox");
+  });
   it("presents structured agent messages instead of their internal wake prompt", () => {
     expect(
       activityPromptSnippet({

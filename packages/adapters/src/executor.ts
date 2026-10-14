@@ -2802,6 +2802,28 @@ export async function appendToolCompletionAudit(
   }
 }
 
+export function toolCallAuditTarget(args: unknown, secrets: string[] = []): string | undefined {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return undefined;
+  const record = args as Record<string, unknown>;
+  let target = ["path", "collection", "toolName", "tool", "botId", "ticketId"]
+    .map((key) => record[key])
+    .find((value) => typeof value === "string" && value.trim());
+  if (!target && typeof record.url === "string") {
+    try {
+      const url = new URL(record.url);
+      target = `${url.origin}${url.pathname}`;
+    } catch {
+      target = undefined;
+    }
+  }
+  if (!target && typeof record.command === "string") {
+    target = record.command.match(/^\s*([\w./-]+)/)?.[1];
+  }
+  return typeof target === "string"
+    ? redactSecrets(target, secrets).replace(/\s+/g, " ").slice(0, 160)
+    : undefined;
+}
+
 export async function deferFutureRoutine(
   jobs: JobPublisher,
   routineId: string,
@@ -6853,7 +6875,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 botId: bot.id,
                 type: "agent.tool.called",
                 runId,
-                payload: { name: event.name, executionId: event.executionId },
+                payload: {
+                  name: event.name,
+                  executionId: event.executionId,
+                  target: toolCallAuditTarget(event.args, runSecrets),
+                },
               });
               pendingToolNames.push(event.name);
               tryFlushPendingTools();
