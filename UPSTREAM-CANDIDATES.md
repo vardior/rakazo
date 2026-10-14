@@ -20,7 +20,7 @@ Checked for duplicates on 2026-10-13: no open or closed upstream issue covers th
 | 8 | Routine runs speak by default; silence is opt-in per prompt | design | code-read | `fix/routine-silence-default` c838092b | not filed |
 | 9 | Prior assistant turns are sent to the model as user messages | needs judgment | reproduced | `fix/history-assistant-roles` 4d75e0a6 | ask first |
 | 10 | A chat reply to a pending takeover is folded into another message and the browser is lost | bug | reproduced | `fix/takeover-chat-reply` 6a079d38, a4beb04d | not filed |
-| 11 | A transient provider overload or dropped stream fails the run | bug | reproduced | `fix/transient-model-retry` 835b4f1d | not filed |
+| 11 | A transient provider overload or dropped stream fails the run | bug | reproduced | `fix/transient-model-retry` cd48fb16, d5dcc36d, a0574037 (rebased on upstream 3209a27d) | PR drafted |
 | 12 | Websites with a third sign-in field cannot be filled from a saved login | gap | reproduced | `fix/login-extra-field` 78cc9c8e, 25d0d0bf | not filed |
 | 13 | Prompt prefix changes between runs, defeating provider prompt caching | design | reproduced | `fix/cache-stable-context` d10daf93, 92ab2653 | not filed |
 | 14 | A credential pasted in chat is re-sent to the model on every later turn | bug | reproduced | `fix/pasted-secret-hygiene` 0051b60f, 8ea7b673 | not filed |
@@ -185,7 +185,7 @@ Scenarios S1–S9 are deterministic fixture drives of the real stack. Before = t
 
 **Description.** A single `503 overloaded` or a dropped SSE stream (`terminated`) fails the whole run, even after tool work.
 
-**Fix.** `fix/transient-model-retry`: retries those failures with 2s, 8s and 20s backoff before failing, without replaying completed tool effects. Verified live (S1) and offline (dropped stream then overload after a tool call).
+**Fix.** `fix/transient-model-retry`: a configured backup is still tried first, unchanged; once no backup is left, the current model is retried after 2s, 8s and 20s before failing, without replaying completed tool effects. Timeouts are not retried, since they already spent the request budget. Verified live against upstream main (2 × 503, a dropped stream and 6 × 503 recover; 8 × 503 fails with the original error after 33s) and offline (dropped stream then overload after a tool call; backup-chain tests unchanged).
 
 ## 12. Websites with a third sign-in field cannot be filled from a saved login
 
