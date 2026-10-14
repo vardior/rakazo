@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 
 const port = Number(process.env.FIXTURE_PORT ?? 0);
 const logPath = process.env.FIXTURE_LOG;
+const bodiesPath = logPath ? logPath.replace(/\.jsonl$/, "") + "-bodies.jsonl" : undefined;
 const modelId = process.env.FIXTURE_MODEL_ID ?? "verify-fixture";
 let requestCount = 0;
 const failuresServed = new Map();
@@ -49,6 +50,7 @@ function choosePlan(messages) {
       toolsServed.add(tool[0]);
       return { kind: "tool", name: tool[1], args: tool[2] ?? "{}" };
     }
+    if (latest.includes("[[promise]]")) return { kind: "promise" };
     const finalSeconds = markerIn(latest, "slow-final", 20);
     if (finalSeconds !== null) return { kind: "slow-final", seconds: finalSeconds };
     const toolSeconds = markerIn(latest, "slow-tool", 10);
@@ -98,6 +100,11 @@ const server = createServer(async (request, response) => {
     if (logPath)
       appendFileSync(logPath, `${JSON.stringify({ n, at: new Date().toISOString(), ...entry })}\n`);
   };
+  if (bodiesPath)
+    appendFileSync(
+      bodiesPath,
+      `${JSON.stringify({ n, tools: body.tools ?? [], messages, instructions: body.instructions })}\n`,
+    );
   record({
     phase: "start",
     plan: plan.kind,
@@ -156,6 +163,10 @@ const server = createServer(async (request, response) => {
       ],
     });
     emit({}, "tool_calls");
+  } else if (plan.kind === "promise") {
+    reply = "I'm continuing with the analysis now and will report back shortly.";
+    emit({ content: reply });
+    emit({}, "stop");
   } else if (plan.kind === "slow-final") {
     reply = `Slow final answer. ${ackText(fresh)}`;
     await streamWords(emit, reply, plan.seconds, closed);
