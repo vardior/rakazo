@@ -364,6 +364,9 @@ export const appContract = {
         runIds: z.array(Id).optional(),
       }),
     ),
+    retry: oc
+      .input(threadTarget.safeExtend({ runId: Id }))
+      .output(z.object({ taskId: Id, runId: Id })),
     react: oc
       .input(
         threadTarget.safeExtend({

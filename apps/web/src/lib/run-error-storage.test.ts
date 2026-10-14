@@ -45,6 +45,26 @@ function failedSnapshot(id: string): ThreadSnapshot {
 }
 
 describe("seen run error storage", () => {
+  it("uses the durable bot notice instead of a duplicate composer alert", () => {
+    const snapshot = failedSnapshot("run-1");
+    snapshot.messages.push({
+      id: "notice",
+      threadId: "thread-1",
+      seq: 2,
+      role: "bot",
+      botId: "bot-1",
+      runId: "run-1",
+      createdAt: "2026-08-31T00:00:00.000Z",
+      blocks: [
+        {
+          kind: "text",
+          text: "I didn't finish because the connection dropped.",
+          runFailure: { runId: "run-1" },
+        },
+      ],
+    });
+    expect(threadRunError(snapshot)).toBeNull();
+  });
   it("keeps the shell usable when browser storage access is blocked", () => {
     const descriptor = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
     Object.defineProperty(globalThis, "localStorage", {

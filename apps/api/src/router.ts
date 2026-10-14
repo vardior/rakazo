@@ -256,7 +256,7 @@ import {
   startOnboarding,
 } from "./onboarding.js";
 import { listRoutineRuns } from "./routine-runs.js";
-import { listSpaceRuns } from "./runs.js";
+import { listSpaceRuns, retryThreadRun } from "./runs.js";
 import { addScreenProxyCapability } from "./screen-proxy.js";
 import { querySpaceSearch } from "./search.js";
 import { withSerializableRetry } from "./serializable-retry.js";
@@ -2180,6 +2180,18 @@ export function createRouter(deps: RouterDeps) {
             ? (runId) => releaseComputerControl(deps, context.actor, target.botId, "done", runId)
             : undefined,
         );
+      }),
+      retry: authed.threads.retry.handler(async ({ context, input }) => {
+        try {
+          const target = await resolveThreadTarget(deps.prisma, context.actor, input);
+          if (target.kind === "bot") {
+            await assertTeachingSendAllowed(deps.prisma, context.actor.spaceId, target.botId);
+          }
+          return await retryThreadRun(deps, context.actor, target, input.runId);
+        } catch (error) {
+          if (error instanceof IsolationError) throw new ORPCError("NOT_FOUND");
+          throw error;
+        }
       }),
       react: authed.threads.react.handler(async ({ context, input }) => {
         const target = await resolveThreadTarget(deps.prisma, context.actor, input);

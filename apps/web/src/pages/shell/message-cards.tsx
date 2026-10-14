@@ -12,6 +12,58 @@ import { rpc } from "../../lib/rpc";
 import { useArtifactImage } from "../../lib/use-artifact-image";
 import { errorText } from "../../lib/user-error";
 
+export function FailedRunNotice({
+  target,
+  block,
+  canRetry,
+  onRefresh,
+}: {
+  target: ArtifactTarget;
+  block: Extract<MessageBlock, { kind: "text" }>;
+  canRetry: boolean;
+  onRefresh: () => Promise<void>;
+}) {
+  const { t } = useLingui();
+  const [pending, setPending] = useState(false);
+  const [retried, setRetried] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  async function retry() {
+    if (pending || !block.runFailure) return;
+    setPending(true);
+    setError(null);
+    try {
+      await rpc.threads.retry({ ...target, runId: block.runFailure.runId });
+      setRetried(true);
+      await onRefresh().catch(() => undefined);
+    } catch (err) {
+      setError(errorText(err, t`Could not retry`));
+    } finally {
+      setPending(false);
+    }
+  }
+  return (
+    <div className="space-y-2 rounded-[20px] bg-muted px-[18px] py-3 text-[15.5px] leading-[1.5] text-foreground/90">
+      <div>{block.text}</div>
+      {canRetry && !retried ? (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={pending}
+          onClick={() => void retry()}
+        >
+          <Trans>Retry</Trans>
+        </Button>
+      ) : null}
+      {error ? (
+        <div role="alert" className="text-[13px] text-destructive">
+          {error}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function ChoiceCard({
   botId,
   block,

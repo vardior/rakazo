@@ -17,6 +17,7 @@ import {
   selectBuiltinToolsForRun,
   settleSteeringAttachmentLoads,
   threadContextForRun,
+  toolCallAuditTarget,
   toolCompletionAuditPayload,
   toolCompletionFromResult,
   toolWorkRecordEntry,
@@ -58,6 +59,21 @@ describe("bot tool permissions", () => {
 });
 
 describe("tool completion audit", () => {
+  it("records brief targets without credentials, URL queries, file contents or shell arguments", () => {
+    expect(toolCallAuditTarget({ path: "notes/result.txt", content: "private content" })).toBe(
+      "notes/result.txt",
+    );
+    expect(
+      toolCallAuditTarget({
+        url: "https://user:password@example.test/report?token=secret#private",
+      }),
+    ).toBe("https://example.test/report");
+    expect(
+      toolCallAuditTarget({ command: "curl -H 'Authorization: secret' https://example.test" }),
+    ).toBe("curl");
+    expect(toolCallAuditTarget({ path: "notes/secret.txt" }, ["secret"])).not.toContain("secret");
+    expect(toolCallAuditTarget({ path: "x".repeat(1000) })).toHaveLength(160);
+  });
   it("records result metadata without persisting tool contents", () => {
     const payload = toolCompletionAuditPayload({
       name: "computer_observe",

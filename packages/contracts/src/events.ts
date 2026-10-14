@@ -100,7 +100,11 @@ export const RunWorkRecordEntrySchema = z.object({
 export type RunWorkRecordEntry = z.infer<typeof RunWorkRecordEntrySchema>;
 
 export const MessageBlock = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("text"), text: z.string() }),
+  z.object({
+    kind: z.literal("text"),
+    text: z.string(),
+    runFailure: z.object({ runId: Id, retried: z.literal(true).optional() }).optional(),
+  }),
   z.object({
     kind: z.literal("card"),
     lines: z.array(z.object({ k: z.string(), v: z.string() })),
@@ -379,6 +383,35 @@ export const ThreadMessageSchema = z.object({
   createdAt: z.string(),
 });
 export type ThreadMessage = z.infer<typeof ThreadMessageSchema>;
+
+export function runFailureNotice(message: Pick<ThreadMessage, "role" | "blocks">) {
+  if (message.role !== "bot") return undefined;
+  return message.blocks.find(
+    (block): block is Extract<MessageBlock, { kind: "text" }> =>
+      block.kind === "text" && Boolean(block.runFailure),
+  );
+}
+
+export function canRetryFailedRun(
+  message: Pick<ThreadMessage, "role" | "blocks" | "botId"> & { seq?: number },
+  messages: Array<Pick<ThreadMessage, "role" | "botId"> & { seq?: number }>,
+  activeBotIds: readonly string[] = [],
+): boolean {
+  const failure = runFailureNotice(message)?.runFailure;
+  const seq = message.seq;
+  if (
+    !failure ||
+    failure.retried ||
+    seq === undefined ||
+    activeBotIds.includes(message.botId ?? "")
+  )
+    return false;
+  return !messages.some(
+    (newer) =>
+      (newer.seq ?? -1) > seq &&
+      (newer.role === "user" || (newer.role === "bot" && newer.botId === message.botId)),
+  );
+}
 
 export function canReactToThreadMessage(message: Pick<ThreadMessage, "id" | "blocks">): boolean {
   return (

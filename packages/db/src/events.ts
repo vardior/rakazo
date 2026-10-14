@@ -32,6 +32,7 @@ import {
   createThreadMessageInTransaction,
   RunHistoryWriteError,
 } from "./messages.js";
+import { failedRunBlocks } from "./run-failure.js";
 import { withTransactionRetry } from "./transaction-retry.js";
 
 const EVENT_BATCH_SIZE = 200;
@@ -1325,19 +1326,21 @@ async function finalizeRunOnce(
     if (task.count !== 1) throw new Error("Run task was not available to finalize");
 
     const workRecord = await loadRunWorkRecord(tx, input.runId);
-    const completedBlocks = completedRunBlocks(
-      attachRunWorkRecord(input.outcome === "completed" ? input.blocks : [], workRecord),
+    const failureBlocks =
+      input.outcome === "completed" ? [] : failedRunBlocks(input.runId, input.error);
+    const terminalBlocks = completedRunBlocks(
+      attachRunWorkRecord(input.outcome === "completed" ? input.blocks : failureBlocks, workRecord),
       writableRun?.startedAt ?? null,
       now,
     );
-    if (completedBlocks.length > 0) {
+    if (terminalBlocks.length > 0) {
       const message = await createThreadMessageInTransaction(tx, {
         threadId: input.threadId,
         role: "bot",
-        blocks: completedBlocks,
+        blocks: terminalBlocks,
         botId: input.botId,
         runId: input.runId,
-        markUnread: input.outcome === "completed" ? input.markUnread : false,
+        markUnread: input.outcome === "completed" ? input.markUnread : failureBlocks.length > 0,
       });
       await appendEventInTransaction(tx, {
         spaceId: input.spaceId,
@@ -1345,7 +1348,7 @@ async function finalizeRunOnce(
         botId: input.botId,
         type: "thread.message.created",
         runId: input.runId,
-        payload: { messageId: message.id, role: "bot", blocks: completedBlocks },
+        payload: { messageId: message.id, role: "bot", blocks: terminalBlocks },
       });
     }
     const lastEvent = await appendEventInTransaction(tx, {

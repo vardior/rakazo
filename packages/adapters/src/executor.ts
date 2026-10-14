@@ -2788,25 +2788,11 @@ export function toolCompletionAuditPayload(
   return payload;
 }
 
-export function toolWorkRecordTarget(args: Record<string, unknown>, secrets: string[]): string {
-  let target = "";
-  if (typeof args.path === "string") {
-    target = args.path;
-  } else if (typeof args.url === "string") {
-    try {
-      const url = new URL(args.url);
-      url.username = "";
-      url.password = "";
-      url.search = "";
-      url.hash = "";
-      target = url.href;
-    } catch {
-      target = "";
-    }
-  } else if (typeof args.command === "string") {
-    target = /^\s*([A-Za-z0-9_./-]+)(?=\s|$)/.exec(args.command)?.[1] ?? "";
-  }
-  return boundedWorkRecordText(redactSecrets(target, secrets), MAX_WORK_RECORD_TARGET_CHARS);
+export function toolWorkRecordTarget(args: unknown, secrets: string[]): string {
+  return boundedWorkRecordText(
+    toolCallAuditTarget(args, secrets) ?? "",
+    MAX_WORK_RECORD_TARGET_CHARS,
+  );
 }
 
 export function toolWorkRecordEntry(
@@ -2880,6 +2866,28 @@ export async function appendToolCompletionAudit(
       executionId: redactSecrets(completion.executionId, secrets),
     });
   }
+}
+
+export function toolCallAuditTarget(args: unknown, secrets: string[] = []): string | undefined {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return undefined;
+  const record = args as Record<string, unknown>;
+  let target = ["path", "collection", "toolName", "tool", "botId", "ticketId"]
+    .map((key) => record[key])
+    .find((value) => typeof value === "string" && value.trim());
+  if (!target && typeof record.url === "string") {
+    try {
+      const url = new URL(record.url);
+      target = `${url.origin}${url.pathname}`;
+    } catch {
+      target = undefined;
+    }
+  }
+  if (!target && typeof record.command === "string") {
+    target = record.command.match(/^\s*([\w./-]+)(?=\s|$)/)?.[1];
+  }
+  return typeof target === "string"
+    ? redactSecrets(target, secrets).replace(/\s+/g, " ").slice(0, 160)
+    : undefined;
 }
 
 export async function deferFutureRoutine(
@@ -6995,6 +7003,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 payload: {
                   name: redactSecrets(event.name, runSecrets),
                   executionId: redactSecrets(event.executionId, runSecrets),
+                  target: toolCallAuditTarget(event.args, runSecrets),
                   workRecordEntry: {
                     tool: boundedWorkRecordText(
                       redactSecrets(event.name, runSecrets),

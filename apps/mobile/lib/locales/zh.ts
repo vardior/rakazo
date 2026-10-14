@@ -221,6 +221,7 @@ export const ZH_MESSAGES: Record<string, string> = {
   "Could not finish sign-in": "无法完成登录",
   "Could not load bot": "无法加载 Bot",
   "Could not load bots": "无法加载 Bot 列表",
+  "Could not retry": "无法重试",
   "Could not load earlier messages": "无法加载更早的消息",
   "Could not load group": "无法加载群组",
   "Could not load integrations": "无法加载集成",

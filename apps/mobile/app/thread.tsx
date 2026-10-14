@@ -8,7 +8,12 @@ import type {
   MessageReaction,
   Routine,
 } from "@rakazo/contracts";
-import { canReactToThreadMessage, MESSAGE_REACTIONS } from "@rakazo/contracts";
+import {
+  canReactToThreadMessage,
+  canRetryFailedRun,
+  MESSAGE_REACTIONS,
+  runFailureNotice,
+} from "@rakazo/contracts";
 import type { SlashActionId, ThreadItem } from "@rakazo/core";
 import {
   abortableDelay,
@@ -92,6 +97,7 @@ import { BotAvatar } from "../components/bot-avatar";
 import { ChoiceCard } from "../components/ChoiceCard";
 import { ComputerCard } from "../components/ComputerCard";
 import { ComposerReplyPreview } from "../components/composer-reply-preview";
+import { FailedRunNotice } from "../components/failed-run-notice";
 import { FailedSendBubble } from "../components/failed-send-bubble";
 import { GlassSurface } from "../components/glass-surface";
 import type { ImageArtifactPreviewTarget } from "../components/image-artifact-viewer";
@@ -1898,7 +1904,11 @@ function Thread({ sessionEpoch }: { sessionEpoch: number }) {
   }
 
   const answerableAskMessageId = latestAnswerableAskMessageId(snap);
-  const runError = snap?.run?.status === "failed" ? (snap.run.error ?? null) : null;
+  const runError =
+    snap?.run?.status === "failed" &&
+    !snap.messages.some((message) => runFailureNotice(message)?.runFailure?.runId === snap.run?.id)
+      ? (snap.run.error ?? null)
+      : null;
   const separatorIds = useMemo(() => timeSeparatorIds(visibleMessages), [visibleMessages]);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   const highlightTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -2016,6 +2026,9 @@ function Thread({ sessionEpoch }: { sessionEpoch: number }) {
     speak,
     react: (message, reaction) => void reactToMessage(message, reaction),
     answer: answerMessage,
+    refresh: async () => {
+      await refresh();
+    },
     openBot,
     openComputer,
     previewMarkdown: setMarkdownPreview,
@@ -2064,6 +2077,7 @@ function Thread({ sessionEpoch }: { sessionEpoch: number }) {
       react: (message, reaction) => rowActionsRef.current.react(message, reaction),
       answer: (message, answer, username, extraValue) =>
         rowActionsRef.current.answer(message, answer, username, extraValue),
+      refresh: () => rowActionsRef.current.refresh(),
       openBot: (id, name) => rowActionsRef.current.openBot(id, name),
       openComputer: (id, name) => rowActionsRef.current.openComputer(id, name),
       previewMarkdown: (target) => rowActionsRef.current.previewMarkdown(target),
@@ -2115,6 +2129,16 @@ function Thread({ sessionEpoch }: { sessionEpoch: number }) {
           readOnly={readOnly}
           onCall={onCall}
           canAnswer={!readOnly && message.id === answerableAskMessageId}
+          canRetryFailure={
+            !readOnly &&
+            canRetryFailedRun(
+              message,
+              snap?.messages ?? [],
+              (snap?.activeRuns ?? [])
+                .filter((run) => !["failed", "completed", "cancelled"].includes(run.status))
+                .map((run) => run.botId ?? ""),
+            )
+          }
           highlighted={highlightedMessageId === message.id}
           separator={separatorIds.has(message.id)}
           replyAuthor={replyAuthor}
@@ -2809,6 +2833,7 @@ type MessageRowActions = {
     username?: string,
     extraValue?: string,
   ) => Promise<void>;
+  refresh: () => Promise<void>;
   openBot: (id: string, name: string) => void;
   openComputer: (id: string, name: string) => void;
   previewMarkdown: (target: MarkdownArtifactPreviewTarget) => void;
@@ -2830,6 +2855,7 @@ type MessageRowProps = {
   readOnly: boolean;
   onCall: boolean;
   canAnswer: boolean;
+  canRetryFailure: boolean;
   highlighted: boolean;
   separator: boolean;
   replyAuthor: string;
@@ -2856,6 +2882,7 @@ const MessageRow = memo(function MessageRow({
   readOnly,
   onCall,
   canAnswer,
+  canRetryFailure,
   highlighted,
   separator,
   replyAuthor,
@@ -3068,6 +3095,8 @@ const MessageRow = memo(function MessageRow({
                 bots={bots}
                 members={members}
                 canAnswer={canAnswer}
+                canRetryFailure={canRetryFailure}
+                onRefresh={actions.refresh}
                 onAnswer={actions.answer}
                 onOpenBot={actions.openBot}
                 onOpenComputer={actions.openComputer}
@@ -3122,6 +3151,8 @@ const MessageBubble = memo(function MessageBubble({
   message,
   members,
   canAnswer,
+  canRetryFailure,
+  onRefresh,
   onAnswer,
   onOpenBot,
   onOpenComputer,
@@ -3137,6 +3168,8 @@ const MessageBubble = memo(function MessageBubble({
   message: MobileMessage;
   members?: MobileSnapshot["members"];
   canAnswer: boolean;
+  canRetryFailure: boolean;
+  onRefresh: () => Promise<void>;
   onAnswer: (
     message: MobileMessage,
     answer: string,
@@ -3156,6 +3189,18 @@ const MessageBubble = memo(function MessageBubble({
   const [peerExpanded, setPeerExpanded] = useState(false);
   const artifactTarget: MobileArtifactTarget = groupId ? { groupId } : { botId };
   const cardBotId = message.botId ?? botId;
+  const failure = runFailureNotice(message);
+  if (failure) {
+    return (
+      <FailedRunNotice
+        target={artifactTarget}
+        block={failure}
+        speaker={memberName(members, message.botId) ?? botName}
+        canRetry={canRetryFailure}
+        onRefresh={onRefresh}
+      />
+    );
+  }
   const computerBotId = message.botId ?? (groupId ? undefined : botId);
   const appConnectBlocks = message.blocks.filter(
     (block): block is Extract<MessageBlock, { kind: "app_connect" }> =>
