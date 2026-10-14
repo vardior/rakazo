@@ -4,7 +4,7 @@ Fork-only tracker for bugs and design gaps worth raising on elie222/rakazo. Bran
 
 Evidence levels: **reproduced** means driven live with `verify-rakazo`; **observed** means seen during a live run but not isolated; **code-read** means inferred from source only.
 
-Fixes 1–9 live on `fix/*` branches cut from `0394e92c`, one commit each (three for steering); fixes 10–17 are cut from `932534d7`, with no fork-only files, so `git cherry-pick` onto `upstream/main` gives a PR-ready branch. Fork `main` merges them all and was verified live with `verify-rakazo` (evidence `20261013-213200-steering-fixed`). Each PR still needs the `finalize` skill, and any user-facing copy quoted in its description.
+Fixes 1–9 live on `fix/*` branches cut from `0394e92c`, one commit each (three for steering); fixes 7 and 10–18 are cut from `932534d7`, with no fork-only files, so `git cherry-pick` onto `upstream/main` gives a PR-ready branch. Fork `main` merges them all and was verified live with `verify-rakazo` (evidence `20261013-213200-steering-fixed`). Each PR still needs the `finalize` skill, and any user-facing copy quoted in its description.
 
 Checked for duplicates on 2026-10-13: no open or closed upstream issue covers these. #910 (free-text replies refused during `waiting_input`) is related but separate.
 
@@ -16,17 +16,18 @@ Checked for duplicates on 2026-10-13: no open or closed upstream issue covers th
 | 4 | Local provider's default 32k context window cannot fit the required tool context | bug | reproduced | `fix/context-budget-message` ee6ec2c2 (message only) | not filed |
 | 5 | A stopped request is re-sent to the model as an open request | needs judgment | reproduced | `fix/stopped-request-history` 25ad1afe | not filed |
 | 6 | Steering cannot interrupt a long model turn | design | reproduced | `fix/steering` 3ef80617 (depends on 1) | not filed |
-| 7 | Owner messages wait behind routine, webhook and intro runs | design | code-read | design only, no code | not filed |
+| 7 | Owner messages wait behind routine, webhook and intro runs | design | reproduced | `fix/owner-priority` dab6c368, 9af8c7bf | not filed |
 | 8 | Routine runs speak by default; silence is opt-in per prompt | design | code-read | `fix/routine-silence-default` 4a97ce5d | not filed |
 | 9 | Prior assistant turns are sent to the model as user messages | needs judgment | reproduced | `fix/history-assistant-roles` 6e112d93 | ask first |
 | 10 | A chat reply to a pending takeover is folded into another message and the browser is lost | bug | reproduced | `fix/takeover-chat-reply` c529ce34, 47970e2a | not filed |
 | 11 | A transient provider overload or dropped stream fails the run | bug | reproduced | `fix/transient-model-retry` 2ea9eca9 | not filed |
 | 12 | Websites with a third sign-in field cannot be filled from a saved login | gap | reproduced | `fix/login-extra-field` b9410a74, fff15f80 | not filed |
 | 13 | Prompt prefix changes between runs, defeating provider prompt caching | design | reproduced | `fix/cache-stable-context` fb2613df, bcd16f38 | not filed |
-| 14 | A credential pasted in chat is re-sent to the model on every later turn | bug | reproduced | `fix/pasted-secret-hygiene` 1904cb56 | not filed |
+| 14 | A credential pasted in chat is re-sent to the model on every later turn | bug | reproduced | `fix/pasted-secret-hygiene` 1904cb56, 692d400a | not filed |
 | 15 | A run that loses the model mid-work fails silently | bug | reproduced | `fix/failed-run-visible` e1f457cf, 518a7a53, 47547433 | not filed |
-| 16 | Facts a tool returned in one run are gone in the next | design | reproduced | `fix/run-work-log` a00cc998 | not filed |
+| 16 | Facts a tool returned in one run are gone in the next | design | reproduced | `fix/run-work-log` a00cc998, 62c140f4 | not filed |
 | 17 | A reply that promises more work ends the run | bug | reproduced | `fix/promise-follow-through` f055d573 | not filed |
+| 18 | Every model call carries every tool schema | design | reproduced | `fix/tool-search` f19ec584, 5b72f3ad | not filed |
 
 ---
 
@@ -132,7 +133,11 @@ Checked for duplicates on 2026-10-13: no open or closed upstream issue covers th
 
 **Proposal.** Add a per-bot computer lease, then let a direct owner message preempt or run alongside background work instead of queueing behind it.
 
-**Design notes (no code).** A message that started its own run would still wait: on a Team computer the per-bot lease is taken in `continueRun` before the model is called, even for the tool-less intro. Private computers take no lease at all (deliberate since #38), and the same lease row drives takeover refusal, the "Computer is busy" conflicts and boot claims. A sound fix: (1) acquire the computer lazily, on the first tool that needs it; (2) add a per-bot lease for Private computers without changing takeover and Boot/Reset/Update; (3) only then stop holding messages behind routine, webhook, intro and ticket runs. Two smaller pre-existing hazards worth their own fixes: the dedicated end-of-run checkpoint does not wait for another active run of the bot, and dedicated screen-lease takeover compares only fence numbers, so a requeued run can take the screen from a live one.
+**Fix.** `fix/owner-priority`: an owner message sent while only a routine, webhook, intro or ticket run is active gets its own run. The background run yields at its next turn boundary between tool steps (an explicit `beforeNextTurn` steering claim), is requeued without being finalized (attempt `yielded`, no failure notice, schedule unchanged), and resumes after the owner's run with a model-only note and its earlier progress. A per-bot start gate keeps a background run and an owner run from executing at once on either computer type. Runs waiting for the user (takeover, input) keep holding messages. No user-facing copy. Verified offline against Postgres and live (S11). Known limits: a background run cannot yield during one long tool call; an owner message sent before the intro starts is answered before the intro.
+
+**Integration note.** With 6 (steering polled during a streaming reply), only the next-turn claim may yield; fork `main` and the branch both carry the `beforeNextTurn` flag.
+
+**Earlier design notes.** A message that started its own run would still wait: on a Team computer the per-bot lease is taken in `continueRun` before the model is called, even for the tool-less intro. Private computers take no lease at all (deliberate since #38), and the same lease row drives takeover refusal, the "Computer is busy" conflicts and boot claims. A sound fix: (1) acquire the computer lazily, on the first tool that needs it; (2) add a per-bot lease for Private computers without changing takeover and Boot/Reset/Update; (3) only then stop holding messages behind routine, webhook, intro and ticket runs. Two smaller pre-existing hazards worth their own fixes: the dedicated end-of-run checkpoint does not wait for another active run of the bot, and dedicated screen-lease takeover compares only fence numbers, so a requeued run can take the screen from a live one.
 
 ## 8. Routine runs speak by default; silence is opt-in per prompt
 
@@ -152,7 +157,7 @@ Checked for duplicates on 2026-10-13: no open or closed upstream issue covers th
 
 ## Live scorecard (`verify-rakazo` `eval-agent.mjs`, three trials, fixture model)
 
-Scenarios S1–S9 are deterministic fixture drives of the real stack. Before = the deployed upstream build; after = fork `main` with 10–17 merged.
+Scenarios S1–S9 are deterministic fixture drives of the real stack. Before = the deployed upstream build; after = fork `main` with 7 and 10–18 merged.
 
 | Scenario | Before | After |
 | --- | --- | --- |
@@ -164,6 +169,8 @@ Scenarios S1–S9 are deterministic fixture drives of the real stack. Before = t
 | S6 a pasted credential is not re-sent on later turns | 0/1 | 3/3 |
 | S7 consecutive runs share a cacheable prefix | first change mid-history | 3/3, first change at the latest turn |
 | S8 tool list identical across every call | 0/1 | 3/3 |
+| S10 a rarely used tool stays reachable while its schema is left out | not applicable (all 64 schemas sent) | 3/3, 31 tools and about 18k schema characters per call |
+| S11 an owner message during a routine is answered before the routine finishes | not measured | pending |
 | S9 saving a memory note keeps the next run's prefix | first change at message 1 | 3/3 |
 
 ## 10. A chat reply to a pending takeover is folded into another message and the browser is lost
@@ -219,4 +226,12 @@ Scenarios S1–S9 are deterministic fixture drives of the real stack. Before = t
 **Description.** A model replying "I'm continuing with the analysis now and will report back shortly." ends the run; nothing continues.
 
 **Fix.** `fix/promise-follow-through`: a deterministic English detector for explicit first-person commitments allows one internal follow-up turn asking the model to do the work or say what blocks it. Verified live (S5). Risk: heuristic, English only.
+
+## 18. Every model call carries every tool schema
+
+**Description.** Each model call sends all 64 built-in tool schemas (about 40,000 characters, roughly 10,000 tokens) plus every connected MCP or integration tool. The bundled local provider's default 32,768-token window cannot fit that with history (issue 4), and selection quality drops as connectors are added. On a live deployment about 20 tools accounted for nearly every call; the largest schema, `schedule_create`, was called twice.
+
+**Fix.** `fix/tool-search`: the run's authorized tool set is computed exactly as before, then split into a fixed core set sent with full schemas and a deferred rest. `find_tools` returns matching deferred schemas as a tool result and lists deferred names in its description; `use_tool`, or a direct call by name, runs a deferred tool through the same approval, replay, validation and audit path, with audits and approvals naming the inner tool. The tool list stays byte-identical across calls and runs. No user-facing copy. Verified live (S10) and offline, including connector approval parity and filtered tools staying unreachable. Known limit: a scheduling lookup with full executor instructions still exceeds the smallest local budget.
+
+**Integration notes.** With 14, `secure_pasted_secret` must be in the core set. With 10, the takeover-hold refusal must run before deferred argument validation. Fork `main` carries both in its merge commit.
 
