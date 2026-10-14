@@ -68,7 +68,7 @@ Fixture model markers, placed in the user's message:
 ## Evidence
 
 ```bash
-$C evidence new <slug>                               # prints the bundle path
+$C evidence new <slug>                               # prints {"bundle", "evidence"}; script with: b=$($C evidence new x | node -pe 'JSON.parse(require("fs").readFileSync(0)).bundle')
 $C evidence index <bundle> --verdict pass|fail|partial [--prs 123]
 ```
 
