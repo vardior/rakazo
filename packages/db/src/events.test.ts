@@ -92,7 +92,11 @@ describe("finalizeRun", () => {
       attempt: { updateMany: vi.fn(async () => ({ count: 1 })) },
       task: { updateMany: vi.fn(async () => ({ count: 1 })) },
       thread: { update: vi.fn(async () => ({ nextEventSeq: 1 })) },
-      event: { create: createEvent, deleteMany: vi.fn(async () => ({ count: 0 })) },
+      event: {
+        create: createEvent,
+        deleteMany: vi.fn(async () => ({ count: 0 })),
+        findMany: vi.fn(async () => []),
+      },
       steeringMessage: {
         findMany: vi.fn(async () => []),
         updateMany: vi.fn(async () => ({ count: 0 })),
@@ -147,6 +151,7 @@ describe("finalizeRun", () => {
       event: {
         create: vi.fn(async () => ({ threadId: "thread-1", seq: 0 })),
         deleteMany: vi.fn(async () => ({ count: 0 })),
+        findMany: vi.fn(async () => []),
       },
       steeringMessage: {
         findMany: vi.fn(async () => [
@@ -212,6 +217,7 @@ describe("finalizeRun", () => {
       event: {
         create: vi.fn(async () => ({ threadId: "thread-1", seq: 0 })),
         deleteMany: vi.fn(async () => ({ count: 0 })),
+        findMany: vi.fn(async () => []),
       },
       steeringMessage: {
         findMany: vi.fn(async () => [
@@ -289,6 +295,7 @@ describe("finalizeRun", () => {
       event: {
         create: vi.fn(async () => ({ threadId: "thread-1", seq: 0 })),
         deleteMany: vi.fn(async () => ({ count: 0 })),
+        findMany: vi.fn(async () => []),
       },
       steeringMessage: {
         findMany: vi.fn(async () => [
@@ -3056,7 +3063,7 @@ describe("appendEvent", () => {
     const tx = {
       thread: { update: vi.fn().mockResolvedValue({ nextEventSeq: 8 }) },
       run: { findUnique: vi.fn().mockResolvedValue({ status: "cancelled" }) },
-      event: { create: vi.fn().mockResolvedValue(created) },
+      event: { create: vi.fn().mockResolvedValue(created), findMany: vi.fn(async () => []) },
     };
     const prisma = {
       $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),

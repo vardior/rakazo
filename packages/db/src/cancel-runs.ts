@@ -1,10 +1,12 @@
 import type { Prisma } from "./client.js";
+import { persistCancelledRunWorkRecord } from "./events.js";
 
 /** The caller selects authorized runs and owns the surrounding transaction and cleanup. */
 export async function cancelRunsInTransaction(
-  tx: Pick<Prisma.TransactionClient, "run" | "attempt" | "task">,
+  tx: Prisma.TransactionClient,
   runs: ReadonlyArray<{ id: string; taskId: string }>,
   cancelledAt: Date,
+  options: { preserveWork?: boolean } = {},
 ): Promise<void> {
   if (runs.length === 0) return;
   const runIds = runs.map((run) => run.id);
@@ -25,4 +27,7 @@ export async function cancelRunsInTransaction(
     where: { id: { in: runs.map((run) => run.taskId) } },
     data: { status: "cancelled" },
   });
+  if (options.preserveWork !== false) {
+    for (const run of runs) await persistCancelledRunWorkRecord(tx, run.id);
+  }
 }

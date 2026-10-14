@@ -51,6 +51,7 @@ function tx(options?: {
       }),
     },
     event: {
+      findMany: vi.fn(async () => []),
       create: vi.fn(async (args: { data: { seq: number } & Record<string, unknown> }) => {
         events.push(args.data);
         return { seq: args.data.seq };

@@ -35,7 +35,12 @@ import {
   routineWakeupJob,
   runContinueJob,
 } from "@rakazo/adapter-kit";
-import type { ComputerCommand, MessageBlock, RunStatus } from "@rakazo/contracts";
+import type {
+  ComputerCommand,
+  MessageBlock,
+  RunStatus,
+  RunWorkRecordEntry,
+} from "@rakazo/contracts";
 import {
   ATTACHMENT_MAX_BYTES,
   BOT_DESCRIPTION_MAX_LENGTH,
@@ -59,6 +64,7 @@ import {
   assertTransition,
   blocksToAgentHistoryText,
   botMessageAllowsSilence,
+  boundedWorkRecordText,
   CALL_CLIENT_NONCE_PREFIX,
   callIdFromClientNonce,
   connectorKindFromToolName,
@@ -75,6 +81,9 @@ import {
   isMessagingChannelRun,
   isOneShotRoutineCrons,
   isTerminal,
+  MAX_WORK_RECORD_RESULT_CHARS,
+  MAX_WORK_RECORD_TARGET_CHARS,
+  MAX_WORK_RECORD_TOOL_CHARS,
   messagingChannelId,
   messagingChannelPrivacyBlock,
   messagingDmSurfaceNote,
@@ -2777,11 +2786,77 @@ export function toolCompletionAuditPayload(
   return payload;
 }
 
+export function toolWorkRecordTarget(args: Record<string, unknown>, secrets: string[]): string {
+  let target = "";
+  if (typeof args.path === "string") {
+    target = args.path;
+  } else if (typeof args.url === "string") {
+    try {
+      const url = new URL(args.url);
+      url.username = "";
+      url.password = "";
+      url.search = "";
+      url.hash = "";
+      target = url.href;
+    } catch {
+      target = "";
+    }
+  } else if (typeof args.command === "string") {
+    target = /^\s*([A-Za-z0-9_./-]+)(?=\s|$)/.exec(args.command)?.[1] ?? "";
+  }
+  return boundedWorkRecordText(redactSecrets(target, secrets), MAX_WORK_RECORD_TARGET_CHARS);
+}
+
+export function toolWorkRecordEntry(
+  completion: AgentToolCompletion,
+  target: string,
+  secrets: string[],
+): RunWorkRecordEntry {
+  let result = "";
+  let imageOnly = false;
+  if (completion.error !== undefined) {
+    result = sanitizeConnectorError(completion.error, secrets);
+  } else if (Array.isArray((completion.result as { content?: unknown } | null)?.content)) {
+    const content = (completion.result as { content: unknown[] }).content;
+    const textParts = content.flatMap((part) => {
+      if (!part || typeof part !== "object") return [];
+      const text = (part as { type?: unknown; text?: unknown }).text;
+      return (part as { type?: unknown }).type === "text" && typeof text === "string" ? [text] : [];
+    });
+    imageOnly =
+      textParts.length === 0 &&
+      content.some((part) => (part as { type?: unknown } | null)?.type === "image");
+    result = textParts
+      .map((text) => {
+        try {
+          return JSON.stringify(redactConnectorPayload(JSON.parse(text), secrets)) ?? "";
+        } catch {
+          return redactSecrets(text, secrets);
+        }
+      })
+      .join("\n");
+  } else if (completion.result !== undefined) {
+    const safeResult = redactConnectorPayload(completion.result, secrets);
+    result = typeof safeResult === "string" ? safeResult : (JSON.stringify(safeResult) ?? "");
+  }
+  return {
+    tool: boundedWorkRecordText(
+      redactSecrets(completion.name, secrets),
+      MAX_WORK_RECORD_TOOL_CHARS,
+    ),
+    target: imageOnly
+      ? ""
+      : boundedWorkRecordText(redactSecrets(target, secrets), MAX_WORK_RECORD_TARGET_CHARS),
+    result: boundedWorkRecordText(redactSecrets(result, secrets), MAX_WORK_RECORD_RESULT_CHARS),
+  };
+}
+
 export async function appendToolCompletionAudit(
   deps: { events: Pick<ThreadEvents, "append"> },
   target: { spaceId: string; threadId: string; botId: string; runId: string },
   completion: AgentToolCompletion,
   secrets: string[] = [],
+  workTarget = "",
 ): Promise<void> {
   try {
     await deps.events.append({
@@ -2790,7 +2865,10 @@ export async function appendToolCompletionAudit(
       botId: target.botId,
       runId: target.runId,
       type: "agent.tool.completed",
-      payload: toolCompletionAuditPayload(completion, secrets),
+      payload: {
+        ...toolCompletionAuditPayload(completion, secrets),
+        workRecordEntry: toolWorkRecordEntry(completion, workTarget, secrets),
+      },
     });
   } catch (error) {
     // Audit persistence must not change the tool result or strand the run.
@@ -3938,6 +4016,21 @@ export function createRunExecutor(deps: ExecutorDeps) {
         // Tool calls that land mid-sentence wait here until the narration catches up to a
         // sentence boundary, so the step chips never render in the middle of a clause.
         let pendingToolNames: string[] = [];
+        const workRecordTargets = new Map<string, string>();
+        const completionAudits = new Set<Promise<void>>();
+        const recordToolCompletion = (completion: AgentToolCompletion) => {
+          const audit = appendToolCompletionAudit(
+            deps,
+            { spaceId: run.spaceId, threadId: thread.id, botId: bot.id, runId },
+            completion,
+            runSecrets,
+            workRecordTargets.get(completion.executionId),
+          );
+          workRecordTargets.delete(completion.executionId);
+          completionAudits.add(audit);
+          void audit.finally(() => completionAudits.delete(audit));
+          return audit;
+        };
         const flushPendingTools = () => {
           if (currentTextSegment) {
             messageSegments = appendTextSegment(messageSegments, currentTextSegment);
@@ -4052,6 +4145,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           _route?: unknown,
           observer?: AgentToolExecutionObserver,
         ) => {
+          workRecordTargets.set(executionId, toolWorkRecordTarget(args, runSecrets));
           context.signal.throwIfAborted();
           if (handedOff) {
             return {
@@ -6605,18 +6699,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     resolveConnectedModel(run, provider, modelId, (values) =>
                       runSecrets.push(...values),
                     ),
-              onToolCompleted: (completion) =>
-                appendToolCompletionAudit(
-                  deps,
-                  {
-                    spaceId: run.spaceId,
-                    threadId: thread.id,
-                    botId: bot.id,
-                    runId,
-                  },
-                  completion,
-                  runSecrets,
-                ),
+              onToolCompleted: recordToolCompletion,
               claimSteering: scripted
                 ? undefined
                 : async (seenIds) => {
@@ -6853,13 +6936,25 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 botId: bot.id,
                 type: "agent.tool.called",
                 runId,
-                payload: { name: event.name, executionId: event.executionId },
+                payload: {
+                  name: redactSecrets(event.name, runSecrets),
+                  executionId: redactSecrets(event.executionId, runSecrets),
+                  workRecordEntry: {
+                    tool: boundedWorkRecordText(
+                      redactSecrets(event.name, runSecrets),
+                      MAX_WORK_RECORD_TOOL_CHARS,
+                    ),
+                    target: toolWorkRecordTarget(event.args, runSecrets),
+                    result: "[no result recorded]",
+                  },
+                },
               });
               pendingToolNames.push(event.name);
               tryFlushPendingTools();
               const loopGuard = advanceToolCallLoopGuard(toolCallStreak, event.name, event.args);
               toolCallStreak = loopGuard.streak;
               if (loopGuard.stuck) {
+                await Promise.all(completionAudits);
                 approvedEffectReplays.assertDrained();
                 flushPendingTools();
                 if (!(await renewRunLease(deps, runId, workerId, fence))) return;
@@ -6909,14 +7004,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 const startedAt = Date.now();
                 try {
                   const result = await applyTool(event.name, event.args, event.executionId);
-                  await appendToolCompletionAudit(
-                    deps,
-                    {
-                      spaceId: run.spaceId,
-                      threadId: thread.id,
-                      botId: bot.id,
-                      runId,
-                    },
+                  await recordToolCompletion(
                     toolCompletionFromResult(
                       {
                         name: event.name,
@@ -6925,26 +7013,15 @@ export function createRunExecutor(deps: ExecutorDeps) {
                       },
                       result,
                     ),
-                    runSecrets,
                   );
                   if (isToolPauseResult(result)) return;
                 } catch (error) {
-                  await appendToolCompletionAudit(
-                    deps,
-                    {
-                      spaceId: run.spaceId,
-                      threadId: thread.id,
-                      botId: bot.id,
-                      runId,
-                    },
-                    {
-                      name: event.name,
-                      executionId: event.executionId,
-                      durationMs: Date.now() - startedAt,
-                      error,
-                    },
-                    runSecrets,
-                  );
+                  await recordToolCompletion({
+                    name: event.name,
+                    executionId: event.executionId,
+                    durationMs: Date.now() - startedAt,
+                    error,
+                  });
                   throw error;
                 }
               }
@@ -7062,6 +7139,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
 
           await workspaceCheckpoint.flush();
           terminalCheckpointComplete = true;
+          await Promise.all(completionAudits);
 
           flushPendingTools();
           // Only routine runs are instructed to emit NO_RESPONSE. Other
@@ -7186,6 +7264,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             getLogger().error("history.compact enqueue failed", error);
           }
         } catch (error) {
+          await Promise.all(completionAudits);
           if (!terminalCheckpointComplete) {
             await workspaceCheckpoint.flush().catch(() => undefined);
           }
