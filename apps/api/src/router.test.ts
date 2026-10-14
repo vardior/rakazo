@@ -3811,7 +3811,7 @@ describe("groups.archive", () => {
         ),
         updateMany: vi.fn(),
       },
-      event: { deleteMany: vi.fn() },
+      event: { findMany: vi.fn().mockResolvedValue([]), deleteMany: vi.fn() },
     };
     const prisma = {
       $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),

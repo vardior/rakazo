@@ -526,7 +526,7 @@ async function detachBotFromGroups(tx: Prisma.TransactionClient, botId: string) 
   if (activeRuns.length) {
     const now = new Date();
     const runIds = activeRuns.map((run) => run.id);
-    await cancelRunsInTransaction(tx, activeRuns, now);
+    await cancelRunsInTransaction(tx, activeRuns, now, { preserveWork: false });
     await expireComputerExecutionLeases(tx, { runId: { in: runIds } });
     await tx.computer.updateMany({
       where: { executionRunId: { in: runIds } },
