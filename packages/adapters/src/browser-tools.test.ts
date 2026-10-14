@@ -1,5 +1,6 @@
 import type { AdapterContext, ComputerRef } from "@rakazo/adapter-kit";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { LoginField } from "./bot-secrets.js";
 import {
   browserActFromTool,
   browserNavigateFromTool,
@@ -91,7 +92,7 @@ describe("browser tools", () => {
     ).toEqual([{ kind: "fill_secret", ref: "e1", secret: "site_login", field: "password" }]);
     expect(() =>
       parseBrowserActions([{ kind: "fill_secret", ref: "e1", secret: "site_login", field: "pin" }]),
-    ).toThrow(/username or password/);
+    ).toThrow(/username, password, or extra/);
     expect(() =>
       parseBrowserActions([{ kind: "fill_secret", ref: "e1", field: "password" }]),
     ).toThrow(/secret/);
@@ -106,6 +107,7 @@ describe("browser tools", () => {
             html: `<!doctype html><html><head><title>Sign in</title></head><body>
               <input aria-label="Email" />
               <input aria-label="Password" type="password" />
+              <input aria-label="User code" />
             </body></html>`,
           },
         },
@@ -116,10 +118,14 @@ describe("browser tools", () => {
         elements: Array<{ ref: string; name: string }>;
       };
       const ref = (name: string) => snap.elements.find((el) => el.name.includes(name))!.ref;
-      return { email: ref("Email"), password: ref("Password") };
+      return { email: ref("Email"), password: ref("Password"), extra: ref("User code") };
     }
-    const values = { username: "fake-user@example.test", password: "fake-password-1" };
-    const resolveSecretFill = async (step: { field: "username" | "password" }) => ({
+    const values = {
+      username: "fake-user@example.test",
+      password: "fake-password-1",
+      extra: "fake-extra-value",
+    };
+    const resolveSecretFill = async (step: { field: LoginField }) => ({
       text: values[step.field],
       origin: "https://login.example.test",
     });
@@ -142,6 +148,34 @@ describe("browser tools", () => {
       expect(acted).toMatchObject({ ok: true, completed: 2 });
       expect(JSON.stringify(acted)).not.toContain(values.username);
       expect(JSON.stringify(acted)).not.toContain(values.password);
+    });
+
+    it("types an extra field and redacts result echoes and errors", async () => {
+      const browser = loginPage("https://login.example.test/signin");
+      const { extra } = await refs(browser, "https://login.example.test/signin");
+      const args = {
+        actions: [{ kind: "fill_secret", ref: extra, secret: "site_login", field: "extra" }],
+      };
+      const options = { resolveSecretFill, redactions: () => [values.extra] };
+      expect(await browserActFromTool(browser, computer, context, args, options)).toMatchObject({
+        ok: true,
+        completed: 1,
+      });
+      const act = vi.spyOn(browser, "act").mockResolvedValueOnce({
+        ok: true,
+        completed: 1,
+        url: "https://login.example.test/signin",
+        title: "Sign in",
+        error: values.extra,
+      });
+      expect(
+        JSON.stringify(await browserActFromTool(browser, computer, context, args, options)),
+      ).not.toContain(values.extra);
+      act.mockRejectedValueOnce(new Error(values.extra));
+      expect(
+        JSON.stringify(await browserActFromTool(browser, computer, context, args, options)),
+      ).not.toContain(values.extra);
+      act.mockRestore();
     });
 
     it("never reports a login-filled field's value, even when too short to redact", async () => {
@@ -308,19 +342,22 @@ describe("browser tools", () => {
       expect(JSON.stringify(acted)).not.toContain(values.username);
     });
 
-    it("refuses to type a saved login on another origin", async () => {
-      const browser = loginPage("https://phish.example.test/signin");
-      const { email } = await refs(browser, "https://phish.example.test/signin");
-      const acted = await browserActFromTool(
-        browser,
-        computer,
-        context,
-        { actions: [{ kind: "fill_secret", ref: email, secret: "site_login", field: "username" }] },
-        { resolveSecretFill },
-      );
-      expect(acted).toMatchObject({ ok: false, completed: 0 });
-      expect(JSON.stringify(acted)).toMatch(/not on the site/);
-    });
+    it.each(["username", "password", "extra"] as const)(
+      "refuses to type %s on another origin",
+      async (field) => {
+        const browser = loginPage("https://phish.example.test/signin");
+        const { email } = await refs(browser, "https://phish.example.test/signin");
+        const acted = await browserActFromTool(
+          browser,
+          computer,
+          context,
+          { actions: [{ kind: "fill_secret", ref: email, secret: "site_login", field }] },
+          { resolveSecretFill },
+        );
+        expect(acted).toMatchObject({ ok: false, completed: 0 });
+        expect(JSON.stringify(acted)).toMatch(/not on the site/);
+      },
+    );
 
     it("acts on nothing when a saved login cannot be resolved", async () => {
       const browser = loginPage("https://login.example.test/signin");

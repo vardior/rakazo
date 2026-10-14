@@ -26,7 +26,7 @@ function secretAskToolSurface() {
       allowPrivateHttpOrigins
         ? "HTTPS origin, or an HTTP origin on a private LAN host"
         : "HTTPS origin"
-    }, or connectionId for a one-use connector code. Credential names must start with a lowercase letter and use only lowercase letters, digits, hyphens, or underscores (max 64 characters). For a website login the user wants saved, use auth {type:"login"} with the sign-in page's HTTPS origin; the card asks for a username and password, and browser_act fill_secret types them. For a value this bot's shell commands need, use auth {type:"command"} with no origin; it is exported to them as an environment variable named after the credential in upper case with hyphens as underscores (netbird-setup-key becomes $NETBIRD_SETUP_KEY). Existing named credentials are reused unless replace is true. For 2FA, CAPTCHA, passkeys, or anything else that needs the live desktop, call request_takeover instead.`,
+    }, or connectionId for a one-use connector code. Credential names must start with a lowercase letter and use only lowercase letters, digits, hyphens, or underscores (max 64 characters). For a website login the user wants saved, use auth {type:"login"} with the sign-in page's HTTPS origin; the card asks for a username and password. Add auth.extraFieldLabel (e.g. "User code") to request one extra protected sign-in field; browser_act fill_secret types it with field:"extra". For a value this bot's shell commands need, use auth {type:"command"} with no origin; it is exported to them as an environment variable named after the credential in upper case with hyphens as underscores (netbird-setup-key becomes $NETBIRD_SETUP_KEY). Existing named credentials are reused unless replace is true. For 2FA, CAPTCHA, passkeys, or anything else that needs the live desktop, call request_takeover instead.`,
     inputSchema: {
       oneOf: [
         {
@@ -224,7 +224,7 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "browser_act",
     description:
-      'Click or fill page elements by ref from browser_snapshot (kinds: click, fill, type, fill_secret). fill_secret types the username or password of a login saved with request_secret, only on the site it was saved for; you never see the value. Prefer this over computer_act for web pages. If the result includes fallback:"computer_act", use computer_act instead.',
+      'Click or fill page elements by ref from browser_snapshot (kinds: click, fill, type, fill_secret). fill_secret types the username, password, or extra field of a login saved with request_secret, only on the site it was saved for; you never see the value. Prefer this over computer_act for web pages. If the result includes fallback:"computer_act", use computer_act instead.',
     inputSchema: {
       type: "object",
       properties: {
@@ -239,7 +239,7 @@ export const builtinAgentTools: ConnectorTool[] = [
               secret: { type: "string", description: "Saved login name for fill_secret." },
               field: {
                 type: "string",
-                enum: ["username", "password"],
+                enum: ["username", "password", "extra"],
                 description: "Login field for fill_secret.",
               },
             },

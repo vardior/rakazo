@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   BotSecretDestination,
   BotSecretDestinationInput,
+  BotSecretSubmission,
   botSecretDestinationSchema,
   commandVariableName,
   commandVariableProblem,
@@ -160,6 +161,44 @@ describe("login credentials", () => {
     ).toBe(true);
     const value = { username: "fake-user", password: "fake:password\nwith newline" };
     expect(decodeLoginSecret(encodeLoginSecret(value))).toEqual(value);
+  });
+
+  it("round-trips a requested extra field and strips protected values from metadata", () => {
+    const credential = {
+      ...destination,
+      auth: { type: "login", extraFieldLabel: "User code" },
+    };
+    expect(BotSecretDestination.parse(credential)).toEqual(credential);
+    const value = {
+      username: "fake-user",
+      password: "fake-password",
+      extra: { label: "User code", value: "fake-user-code" },
+    };
+    expect(decodeLoginSecret(encodeLoginSecret(value))).toEqual(value);
+    expect(
+      BotSecretSubmission.parse({
+        credentialSaved: { ...credential, auth: { ...credential.auth, extra: value.extra } },
+      }),
+    ).toEqual({ credentialSaved: credential });
+  });
+
+  it.each(["", " ", "x".repeat(121)])("rejects an invalid extra field label", (extraFieldLabel) => {
+    expect(
+      BotSecretDestination.safeParse({
+        ...destination,
+        auth: { type: "login", extraFieldLabel },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects an empty protected extra value", () => {
+    expect(() =>
+      encodeLoginSecret({
+        username: "fake-user",
+        password: "fake-password",
+        extra: { label: "User code", value: "" },
+      }),
+    ).toThrow();
   });
 
   it.each([

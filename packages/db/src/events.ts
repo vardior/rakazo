@@ -197,6 +197,7 @@ export interface AnswerRunInput {
   clientNonce?: string;
   /** Only for a login card; `answer` carries its password. */
   username?: string;
+  extraValue?: string;
 }
 
 export interface SendUserMessageInput {
@@ -642,8 +643,17 @@ async function commitAnswerRunInput(
   const loginAsk = secretAsk && pendingAsk.credential?.auth.type === "login";
   // A username belongs only to a login card, which cannot be saved without one.
   if (loginAsk !== Boolean(input.username?.trim())) return null;
+  const extraFieldLabel =
+    secretAsk && pendingAsk.credential?.auth.type === "login"
+      ? pendingAsk.credential.auth.extraFieldLabel
+      : undefined;
+  if (Boolean(extraFieldLabel) !== (input.extraValue !== undefined)) return null;
   const login = loginAsk
-    ? LoginSecretValue.safeParse({ username: input.username!.trim(), password: input.answer })
+    ? LoginSecretValue.safeParse({
+        username: input.username!.trim(),
+        password: input.answer,
+        ...(extraFieldLabel ? { extra: { label: extraFieldLabel, value: input.extraValue } } : {}),
+      })
     : undefined;
   if (login && !login.success) return null;
   let approvalEffect: { id: string; kind: string } | null = null;

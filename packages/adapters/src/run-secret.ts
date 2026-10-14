@@ -149,24 +149,30 @@ export function createRunSecretWriter(secretStore: SecretStore): RunSecretWriter
               throw new Error("Secret request changed; retry");
             },
           });
+        const extraFieldLabel =
+          ask.credential?.auth.type === "login" ? ask.credential.auth.extraFieldLabel : undefined;
+        const login =
+          ask.credential?.auth.type === "login"
+            ? LoginSecretValue.safeParse({
+                username: input.username?.trim(),
+                password: input.answer,
+                ...(extraFieldLabel
+                  ? { extra: { label: extraFieldLabel, value: input.extraValue } }
+                  : {}),
+              })
+            : undefined;
         if (
           (ask.credential && run.userId !== input.answeredByUserId) ||
           (ask.credential?.auth.type === "login") !== Boolean(input.username?.trim()) ||
-          (ask.credential?.auth.type === "login" &&
-            !LoginSecretValue.safeParse({
-              username: input.username?.trim(),
-              password: input.answer,
-            }).success)
+          Boolean(extraFieldLabel) !== (input.extraValue !== undefined) ||
+          (login && !login.success)
         )
           return commit({
             store: async () => {
               throw new Error("Secret request changed; retry");
             },
           });
-        const plaintext =
-          ask.credential?.auth.type === "login"
-            ? encodeLoginSecret({ username: input.username?.trim() ?? "", password: input.answer })
-            : input.answer;
+        const plaintext = login?.success ? encodeLoginSecret(login.data) : input.answer;
         const scope = { userId: run.userId, spaceId: input.spaceId, botId: run.botId };
         const prepared = ask.credential
           ? await prepareBotSecret({

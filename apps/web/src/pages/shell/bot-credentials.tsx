@@ -16,9 +16,21 @@ type CredentialAuthType = ReadableCredentialAuth["type"];
 
 const fieldLabelClass = "mt-3 block text-[13px] text-muted-foreground";
 
-/** The stored value: a website login is saved as one encoded username and password pair. */
-function credentialPlaintext(type: CredentialAuthType, username: string, value: string) {
-  return type === "login" ? encodeLoginSecret({ username, password: value }) : value;
+function credentialPlaintext(
+  auth: ReadableCredentialAuth,
+  username: string,
+  value: string,
+  extraValue: string,
+) {
+  return auth.type === "login"
+    ? encodeLoginSecret({
+        username,
+        password: value,
+        ...(auth.extraFieldLabel
+          ? { extra: { label: auth.extraFieldLabel, value: extraValue } }
+          : {}),
+      })
+    : value;
 }
 
 /** A command variable has no site, so its destination carries no origin. */
@@ -44,6 +56,7 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
   // Protected fields: held only in component state and cleared on every submit or cancel.
   const [loginUsername, setLoginUsername] = useState("");
   const [value, setValue] = useState("");
+  const [extraValue, setExtraValue] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -76,6 +89,7 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
   function clearProtectedFields() {
     setValue("");
     setLoginUsername("");
+    setExtraValue("");
   }
 
   function authLabel(auth: ReadableCredentialAuth) {
@@ -107,13 +121,14 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
   }) {
     const username = loginUsername.trim();
     const secretValue = value;
+    const secretExtraValue = extraValue;
     clearProtectedFields();
     setError(null);
     let plaintext: string;
     try {
-      plaintext = credentialPlaintext(destination.auth.type, username, secretValue);
+      plaintext = credentialPlaintext(destination.auth, username, secretValue, secretExtraValue);
     } catch {
-      setError(t`Enter a username and password`);
+      setError(t`Enter all login fields`);
       return false;
     }
     setBusy(true);
@@ -168,7 +183,11 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
     }
   }
 
-  const loginFields = (type: CredentialAuthType, testIdPrefix: string) => (
+  const loginFields = (
+    type: CredentialAuthType,
+    testIdPrefix: string,
+    extraFieldLabel?: string,
+  ) => (
     <>
       {type === "login" ? (
         <label htmlFor={`${ids}-${testIdPrefix}-username`} className={fieldLabelClass}>
@@ -198,11 +217,28 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
           className="mt-1.5"
         />
       </label>
+      {extraFieldLabel ? (
+        <label htmlFor={`${ids}-${testIdPrefix}-extra`} className={fieldLabelClass}>
+          {extraFieldLabel}
+          <Input
+            id={`${ids}-${testIdPrefix}-extra`}
+            data-testid={`${testIdPrefix}-extra`}
+            type="password"
+            autoComplete="new-password"
+            spellCheck={false}
+            value={extraValue}
+            onChange={(event) => setExtraValue(event.target.value)}
+            className="mt-1.5"
+          />
+        </label>
+      ) : null}
     </>
   );
 
-  const valueReady = (type: CredentialAuthType) =>
-    value.length > 0 && (type !== "login" || loginUsername.trim().length > 0);
+  const valueReady = (type: CredentialAuthType, extraFieldLabel?: string) =>
+    value.length > 0 &&
+    (type !== "login" || loginUsername.trim().length > 0) &&
+    (!extraFieldLabel || extraValue.length > 0);
 
   const nameValid = BotSecretName.safeParse(name.trim()).success;
   // Shown live while a command variable is named, so a reserved name is caught before saving.
@@ -274,6 +310,9 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
                     {authLabel(readableAuth)}
                     {readableAuth.type === "command"
                       ? ` · $${commandVariableName(secret.name)}`
+                      : null}
+                    {readableAuth.type === "login" && readableAuth.extraFieldLabel
+                      ? ` · ${readableAuth.extraFieldLabel}`
                       : null}{" "}
                     · {t`Updated ${updated}`}
                   </div>
@@ -286,13 +325,25 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
                       void submitReplace(secret);
                     }}
                   >
-                    {loginFields(readableAuth.type, "credential-replace")}
+                    {loginFields(
+                      readableAuth.type,
+                      "credential-replace",
+                      readableAuth.type === "login" ? readableAuth.extraFieldLabel : undefined,
+                    )}
                     <div className="mt-3 flex gap-2">
                       <Button
                         type="submit"
                         size="sm"
                         data-testid="credential-replace-save"
-                        disabled={busy || !valueReady(readableAuth.type)}
+                        disabled={
+                          busy ||
+                          !valueReady(
+                            readableAuth.type,
+                            readableAuth.type === "login"
+                              ? readableAuth.extraFieldLabel
+                              : undefined,
+                          )
+                        }
                       >
                         <Trans>Save new value</Trans>
                       </Button>

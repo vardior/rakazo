@@ -7681,7 +7681,7 @@ function secretGuidance(disabled?: ReadonlySet<string>): string[] {
       ? "; fill it with browser_act fill_secret, which only works on the saved site"
       : "";
     clauses.push(
-      `Use request_secret with a credential destination to save reusable API credentials, or with auth type login when the user wants a website login saved${fill}. When your shell commands need a secret value, use request_secret with auth type command; it is exported as the environment variable that request_secret and list_secrets report.`,
+      `Use request_secret with a credential destination to save reusable API credentials, or with auth type login when the user wants a website login saved${fill}. Set auth.extraFieldLabel to request one additional protected sign-in field, filled with field extra. When your shell commands need a secret value, use request_secret with auth type command; it is exported as the environment variable that request_secret and list_secrets report.`,
     );
   }
   const uses: string[] = [];

@@ -357,7 +357,8 @@ export function sameSecretDestination(
   return (
     left.name === right.name &&
     left.origin === right.origin &&
-    JSON.stringify(left.auth) === JSON.stringify(right.auth)
+    ((left.auth.type === "login" && right.auth.type === "login") ||
+      JSON.stringify(left.auth) === JSON.stringify(right.auth))
   );
 }
 
@@ -379,8 +380,12 @@ export async function prepareBotSecret(input: {
   const { prisma, secretStore, scope, plaintext } = input;
   if (!plaintext || plaintext.length > 16_384) throw new Error("Invalid credential length");
   const destination = normalizeSecretDestination(input.destination);
-  if (destination.auth.type === "login") decodeLoginSecret(plaintext);
-  else if (destination.auth.type === "command") {
+  if (destination.auth.type === "login") {
+    const login = decodeLoginSecret(plaintext);
+    if (login.extra?.label !== destination.auth.extraFieldLabel) {
+      throw new Error("Login fields do not match the requested credential");
+    }
+  } else if (destination.auth.type === "command") {
     // NUL cannot be an environment value. An unpaired surrogate cannot be percent-encoded
     // later, and that throw would abort every subsequent shell command for this bot.
     if (plaintext.includes("\0") || percentEncoded(plaintext) === undefined) {
@@ -426,7 +431,10 @@ export async function prepareBotSecret(input: {
       if (current?.id !== existing?.id)
         throw Object.assign(new Error("Credential changed while saving; retry"), { code: "P2034" });
       if (current)
-        await tx.botSecret.update({ where: { id }, data: { ciphertext: stored.ciphertext } });
+        await tx.botSecret.update({
+          where: { id },
+          data: { ciphertext: stored.ciphertext, auth: destination.auth },
+        });
       else
         await tx.botSecret.create({
           data: { id, ...scopeFields(scope), ...destination, ciphertext: stored.ciphertext },
@@ -582,7 +590,7 @@ export async function requestWithBotSecret(input: {
   }
 }
 
-export type LoginField = "username" | "password";
+export type LoginField = "username" | "password" | "extra";
 const MIN_REDACTED_USERNAME = 6;
 
 /**
@@ -623,13 +631,18 @@ export async function resolveLoginFill(input: {
     return { error: "Website logins can only be filled on an HTTPS origin." };
   }
   const login = decodeLoginSecret(await input.secretStore.load(row.ciphertext, row.id));
+  const text = input.field === "extra" ? login.extra?.value : login[input.field];
+  if (text === undefined) {
+    return { error: "This login has no extra field. Use request_secret with replace to add it." };
+  }
   return {
-    text: login[input.field],
+    text,
     origin: destination.origin,
     // Redaction is substring replacement, so a short username would mangle unrelated text.
     redactions: [
       ...new Set(
         [login.password, encodeURIComponent(login.password)].concat(
+          login.extra ? [login.extra.value, encodeURIComponent(login.extra.value)] : [],
           login.username.length >= MIN_REDACTED_USERNAME
             ? [login.username, encodeURIComponent(login.username)]
             : [],

@@ -1710,7 +1710,7 @@ function Thread({ sessionEpoch }: { sessionEpoch: number }) {
   }
 
   const answerMessage = useCallback(
-    async (message: MobileMessage, answer: string, username?: string) => {
+    async (message: MobileMessage, answer: string, username?: string, extraValue?: string) => {
       const targetBotId = botId;
       const targetGroupId = groupId;
       if (readOnly || (!targetBotId && !targetGroupId) || !message.runId) return;
@@ -1720,6 +1720,7 @@ function Thread({ sessionEpoch }: { sessionEpoch: number }) {
         messageId: message.id,
         answer,
         ...(username ? { username } : {}),
+        ...(extraValue !== undefined ? { extraValue } : {}),
       });
       if (isCurrentTarget(targetBotId, targetGroupId)) await refresh();
     },
@@ -2061,8 +2062,8 @@ function Thread({ sessionEpoch }: { sessionEpoch: number }) {
       select: (text) => rowActionsRef.current.select(text),
       speak: (message) => rowActionsRef.current.speak(message),
       react: (message, reaction) => rowActionsRef.current.react(message, reaction),
-      answer: (message, answer, username) =>
-        rowActionsRef.current.answer(message, answer, username),
+      answer: (message, answer, username, extraValue) =>
+        rowActionsRef.current.answer(message, answer, username, extraValue),
       openBot: (id, name) => rowActionsRef.current.openBot(id, name),
       openComputer: (id, name) => rowActionsRef.current.openComputer(id, name),
       previewMarkdown: (target) => rowActionsRef.current.previewMarkdown(target),
@@ -2802,7 +2803,12 @@ type MessageRowActions = {
   select: (text: string) => void;
   speak: (message: MobileMessage) => void;
   react: (message: MobileMessage, reaction: MessageReaction) => void;
-  answer: (message: MobileMessage, answer: string, username?: string) => Promise<void>;
+  answer: (
+    message: MobileMessage,
+    answer: string,
+    username?: string,
+    extraValue?: string,
+  ) => Promise<void>;
   openBot: (id: string, name: string) => void;
   openComputer: (id: string, name: string) => void;
   previewMarkdown: (target: MarkdownArtifactPreviewTarget) => void;
@@ -3131,7 +3137,12 @@ const MessageBubble = memo(function MessageBubble({
   message: MobileMessage;
   members?: MobileSnapshot["members"];
   canAnswer: boolean;
-  onAnswer: (message: MobileMessage, answer: string, username?: string) => Promise<void>;
+  onAnswer: (
+    message: MobileMessage,
+    answer: string,
+    username?: string,
+    extraValue?: string,
+  ) => Promise<void>;
   onOpenBot: (botId: string, name: string) => void;
   onOpenComputer: (botId: string, name: string) => void;
   onChoiceDismissed?: (question: string) => void;
@@ -3165,7 +3176,9 @@ const MessageBubble = memo(function MessageBubble({
           ask={ask}
           actionProps={actionProps}
           canAnswer={canAnswer}
-          onAnswer={(answer, username) => onAnswer(message, answer, username)}
+          onAnswer={(answer, username, extraValue) =>
+            onAnswer(message, answer, username, extraValue)
+          }
         />
         {appConnectBlocks.map((block, index) => (
           <AppConnectCard
@@ -3892,20 +3905,27 @@ function AskBlock({
 }: {
   ask: Extract<MobileMessage["blocks"][number], { kind: "ask" }>;
   canAnswer: boolean;
-  onAnswer: (answer: string, username?: string) => Promise<void>;
+  onAnswer: (answer: string, username?: string, extraValue?: string) => Promise<void>;
   actionProps: MessageActionProps;
 }) {
   const tokens = useMobileTokens();
   const { t } = useI18n();
   const [answer, setAnswer] = useState("");
   const [username, setUsername] = useState("");
+  const [extraValue, setExtraValue] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const answered = ask.status === "answered";
   const secretInput = isSecretAskBlock(ask);
   const loginInput = secretInput && ask.credential?.auth.type === "login";
+  const extraFieldLabel =
+    secretInput && ask.credential?.auth.type === "login"
+      ? ask.credential.auth.extraFieldLabel
+      : undefined;
   const incomplete =
-    (secretInput ? answer.length === 0 : !answer.trim()) || (loginInput && !username.trim());
+    (secretInput ? answer.length === 0 : !answer.trim()) ||
+    (loginInput && !username.trim()) ||
+    (Boolean(extraFieldLabel) && !extraValue);
   const secretLabel =
     loginInput || ask.purpose === "password"
       ? t("Password")
@@ -3919,11 +3939,16 @@ function AskBlock({
     if (incomplete) return;
     const submitValue = secretInput ? answer : answer.trim();
     const submitUsername = loginInput ? username.trim() : undefined;
+    const submitExtraValue = extraFieldLabel ? extraValue : undefined;
     setSubmitting(true);
     setError(null);
-    if (secretInput) setAnswer("");
+    if (secretInput) {
+      setAnswer("");
+      setUsername("");
+      setExtraValue("");
+    }
     try {
-      await onAnswer(submitValue, submitUsername);
+      await onAnswer(submitValue, submitUsername, submitExtraValue);
     } catch (cause) {
       setError(
         secretInput ? t("Could not send answer") : errorText(cause, t("Could not send answer")),
@@ -3997,6 +4022,25 @@ function AskBlock({
             onSubmitEditing={() => void submit()}
             style={[askInputStyles.field, { borderColor: tokens.border, color: tokens.foreground }]}
           />
+          {extraFieldLabel ? (
+            <TextInput
+              accessibilityLabel={extraFieldLabel}
+              value={extraValue}
+              onChangeText={setExtraValue}
+              placeholder={extraFieldLabel}
+              placeholderTextColor={tokens.mutedForeground}
+              secureTextEntry
+              autoComplete="off"
+              autoCorrect={false}
+              autoCapitalize="none"
+              editable={!submitting}
+              onSubmitEditing={() => void submit()}
+              style={[
+                askInputStyles.field,
+                { borderColor: tokens.border, color: tokens.foreground },
+              ]}
+            />
+          ) : null}
           <NativeActionButton
             label={submitLabel}
             disabled={incomplete}

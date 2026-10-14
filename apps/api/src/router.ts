@@ -642,6 +642,7 @@ const BOT_SECRET_INPUT_ERRORS = [
   "Credential cannot be used with this authentication method",
   "Remove the existing credential before changing its destination",
   "Credential limit reached",
+  "Login fields do not match the requested credential",
 ];
 
 /** Map credential validation failures to a bad request without echoing the submitted value. */
@@ -2454,6 +2455,7 @@ export function createRouter(deps: RouterDeps) {
           answer: input.answer,
           clientNonce: input.clientNonce,
           username: input.username,
+          extraValue: input.extraValue,
         });
         if (!answered) {
           throw new ORPCError("CONFLICT", {
