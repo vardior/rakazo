@@ -201,7 +201,12 @@ import {
   browserNavigateFromTool,
   browserSnapshotFromTool,
 } from "./browser-tools.js";
-import { agentConnectionTools, builtinAgentTools, sharedMemorySaveError } from "./builtin-tools.js";
+import {
+  agentConnectionTools,
+  builtinAgentTools,
+  deferredToolControls,
+  sharedMemorySaveError,
+} from "./builtin-tools.js";
 import { archiveSpawnedBot, spawnBot } from "./child-bots.js";
 import type { CloudAgentConnection } from "./cloud-agent-factory.js";
 import { cloudAgentsEnabled } from "./cloud-agent-factory.js";
@@ -247,6 +252,11 @@ import {
 import { checkpointRunComputerWorkspace } from "./computer-workspace.js";
 import { redactConnectorPayload, sanitizeConnectorError } from "./connector-safety.js";
 import { formatCurrentTimeInstruction } from "./current-time.js";
+import {
+  findDeferredTools,
+  resolveDeferredToolCall,
+  splitDeferredTools,
+} from "./deferred-tools.js";
 import { resolveDeploymentModel } from "./deployment-model.js";
 import { handoffToGroupBot, loadGroupContext } from "./group-handoff.js";
 import {
@@ -430,7 +440,9 @@ const MAX_MODEL_FILE_BYTES = 250_000;
 const TURN_ATTACHMENT_UNAVAILABLE =
   "An attachment in this message could not be loaded. Tell the user the attachment was unavailable and do not guess its contents.";
 const STEERING_ATTACHMENT_UNAVAILABLE = TURN_ATTACHMENT_UNAVAILABLE;
-const BUILTIN_AGENT_TOOL_NAMES = new Set(builtinAgentTools.map((tool) => tool.name));
+const BUILTIN_AGENT_TOOL_NAMES = new Set(
+  [...builtinAgentTools, ...deferredToolControls([])].map((tool) => tool.name),
+);
 
 /** Avoid an expensive remote workspace export when a turn never touched the computer. */
 export function createRunWorkspaceCheckpoint(checkpoint: () => Promise<unknown>) {
@@ -3929,7 +3941,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             : []),
         ];
         const exposedConnectorTools = discovered.filter(
-          (tool) => !builtinAgentTools.some((builtin) => builtin.name === tool.name),
+          (tool) => !BUILTIN_AGENT_TOOL_NAMES.has(tool.name),
         );
         const connectorTools = new Map(
           exposedConnectorTools.map((tool) => [tool.name, tool] as const),
@@ -3962,7 +3974,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
         // The intro turn confirms how a bot read its own role before anyone hands it
         // real work — it must not be able to act on that reading (shell, computer,
         // scheduling, spawning another bot, ...) before the user has assigned any task.
-        const tools = run.trigger === "created" ? [] : [...builtins, ...exposedConnectorTools];
+        const authorizedTools =
+          run.trigger === "created" ? [] : [...builtins, ...exposedConnectorTools];
+        const { tools, deferredTools } = splitDeferredTools(authorizedTools);
+        const authorizedToolNames = new Set(authorizedTools.map((tool) => tool.name));
         const taskCatalogInstruction = tools.some((tool) => tool.name === "task_catalog")
           ? TASK_CATALOG_GUIDANCE
           : undefined;
@@ -4035,7 +4050,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
           const audit = appendToolCompletionAudit(
             deps,
             { spaceId: run.spaceId, threadId: thread.id, botId: bot.id, runId },
-            completion,
+            {
+              ...completion,
+              name: deferredExecutionNames.get(completion.executionId) ?? completion.name,
+            },
             runSecrets,
             workRecordTargets.get(completion.executionId),
           );
@@ -4150,6 +4168,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           runSecrets.push(...additions);
           progressRedactor = createStreamingRedactor(runSecrets);
         };
+        const deferredExecutionNames = new Map<string, string>();
         const consumedEffectIds = new Set<string>();
         const nextMutatingEffectOccurrence = (toolName: string, args: Record<string, unknown>) => {
           const fingerprint = toolEffectIdempotencyKey(runId, toolName, args);
@@ -4165,21 +4184,47 @@ export function createRunExecutor(deps: ExecutorDeps) {
           _route?: unknown,
           observer?: AgentToolExecutionObserver,
         ) => {
-          workRecordTargets.set(executionId, toolWorkRecordTarget(args, runSecrets));
           context.signal.throwIfAborted();
-          if (handedOff) {
-            return {
-              error: "This stage was handed off. End the turn without more tool calls.",
-            };
+          if (name === "find_tools" && deferredTools.length > 0) {
+            return findDeferredTools(deferredTools, String(args.query ?? ""));
           }
+          if (name === "use_tool" && deferredTools.length > 0) {
+            const call = resolveDeferredToolCall(deferredTools, args);
+            if ("error" in call) return call;
+            name = call.tool.name;
+            args = call.args;
+            deferredExecutionNames.set(executionId, name);
+          }
+          workRecordTargets.set(executionId, toolWorkRecordTarget(args, runSecrets));
           if (disabledBuiltinTools.has(name)) {
             return { error: "This tool is disabled for this bot." };
+          }
+          if (!authorizedToolNames.has(name)) {
+            return {
+              error: "This tool is unavailable for this run. Use find_tools to find a tool.",
+            };
           }
           if (
             heldForTakeover &&
             (PAGE_BROWSER_TOOL_NAMES.has(name) || IMAGE_RETURNING_COMPUTER_TOOLS.has(name))
           ) {
             return { error: DESKTOP_HELD_FOR_TAKEOVER_MESSAGE };
+          }
+          const deferredTool = deferredTools.find((tool) => tool.name === name);
+          if (deferredTool) {
+            try {
+              assertConnectorToolArgs(deferredTool.inputSchema, args);
+            } catch (error) {
+              return {
+                error: sanitizeConnectorError(error),
+                inputSchema: deferredTool.inputSchema,
+              };
+            }
+          }
+          if (handedOff) {
+            return {
+              error: "This stage was handed off. End the turn without more tool calls.",
+            };
           }
           if (name === "secure_pasted_secret") {
             const result = await securePastedBotSecret({
@@ -5397,7 +5442,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               botId: bot.id,
               userId: run.userId,
               ...(thread.groupId ? { threadId: thread.id } : {}),
-              tools,
+              tools: authorizedTools,
             });
           }
           if (name === "scratchpad_list") {
@@ -6503,7 +6548,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const approvalContinuation = buildApprovalContinuation(
           approvedEffects,
           (request) => redactSecrets(JSON.stringify(request), runSecrets),
-          { exposedToolNames: new Set(tools.map((tool) => tool.name)) },
+          { exposedToolNames: authorizedToolNames },
         );
         const replyContext = await loadReplyContext(deps.prisma, thread.id, run.sourceMessageId);
         const currentState = [memoryContext, scratchpadContext, ticketContext, recalledMemory]
@@ -6661,6 +6706,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 computerInstruction,
                 pageBrowserAllowed,
                 taskCatalogInstruction,
+                deferredToolInstruction:
+                  deferredTools.length > 0
+                    ? "For any tool named in these instructions, skills, task catalog, or connected integrations whose schema is absent, first call find_tools to read its schema, then call use_tool with its exact name and arguments. This includes scheduling, skill management, bot management, MCP and plugin tools. Tool lookup does not grant additional permissions."
+                    : undefined,
                 workspaceInstruction,
                 agentEnvironmentInstruction,
                 botDirectory,
@@ -6675,6 +6724,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               history: runtimeHistory,
               currentTurnImages,
               tools,
+              deferredTools,
               model: {
                 provider: runModelProvider,
                 id: runModelId,
@@ -6801,7 +6851,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
             },
             context,
           );
-          for await (const event of withRuntimeCleanup(runtimeEvents, runAbortController)) {
+          for await (let event of withRuntimeCleanup(runtimeEvents, runAbortController)) {
+            if (event.type === "tool" && event.name === "use_tool") {
+              const call = resolveDeferredToolCall(deferredTools, event.args);
+              if (!("error" in call)) event = { ...event, name: call.tool.name, args: call.args };
+            }
             if (approvalPausePending) return;
             if (!leaseValid) return;
             const now = Date.now();
@@ -7959,6 +8013,7 @@ export function userTurnInstructions(parts: {
   computerInstruction: string;
   pageBrowserAllowed: boolean;
   taskCatalogInstruction?: string;
+  deferredToolInstruction?: string;
   workspaceInstruction: string;
   agentEnvironmentInstruction: string | undefined;
   botDirectory: string | undefined;
@@ -7975,6 +8030,7 @@ export function userTurnInstructions(parts: {
     builtinOffered(parts.disabledBuiltinTools, "read_history")
       ? "For questions about an earlier discussion, first check the visible conversation. Answer follow-ups from facts already present in original messages or prior source-verified replies when no later visible correction changes them; do not repeat retrieval solely because the user asks again. Use search_history when necessary evidence is missing or uncertain. Start with the project name alone, or one distinctive topic word if no project is named, then use read_history to check surrounding messages, outcomes, and later corrections before claiming exact recall. Verify that matches contain source statements answering the question. If matches lack the requested fact and nextSearch is present, call search_history with those arguments. Coverage applies only to the requested query and range. Empty narrower queries do not exhaust the broader topic query’s matches. Do not claim evidence is unavailable while that broader search still has an unexplored cursor. If a search is empty, try the single project or topic word before concluding the evidence is missing. If the requested fact remains absent, say so briefly without volunteering adjacent facts. If multiple projects match and none is selected, ask which project before giving candidate facts. Historical snapshots are navigation aids, not authoritative facts or approvals."
       : undefined,
+    parts.deferredToolInstruction,
     toolUsageLine(parts),
     parts.taskCatalogInstruction,
     parts.workspaceInstruction,

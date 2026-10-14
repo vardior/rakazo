@@ -72,6 +72,74 @@ export const DELEGATION_TOOL_NAMES = new Set([
   "message_bot",
 ]);
 
+export const CORE_BUILTIN_TOOL_NAMES = new Set([
+  "shell",
+  "browser_act",
+  "browser_snapshot",
+  "computer_act",
+  "write_file",
+  "computer_observe",
+  "list_files",
+  "task_catalog",
+  "search_history",
+  "request_takeover",
+  "message_user",
+  "message_bot",
+  "browser_navigate",
+  "web_search",
+  "web_fetch",
+  "read_file",
+  "read_history",
+  "attach_file",
+  "ask_user",
+  "request_secret",
+  "secure_pasted_secret",
+  "list_secrets",
+  "secret_request",
+  "forget_secret",
+  "remember",
+  "save_shared_memory",
+  "save_memory",
+  "recall_memory",
+  "forget_memory",
+  "scratchpad_list",
+  "scratchpad_add",
+  "scratchpad_update",
+  "scratchpad_complete",
+  "scratchpad_remove",
+  "end_call",
+]);
+
+export function deferredToolControls(names: readonly string[]): ConnectorTool[] {
+  return [
+    {
+      name: "find_tools",
+      description: `Find up to 5 deferred tools by name or description keywords and read their input schemas before calling use_tool. Available: ${names.join(", ")}.`,
+      inputSchema: {
+        type: "object",
+        properties: { query: { type: "string" } },
+        required: ["query"],
+        additionalProperties: false,
+      },
+      readOnly: true,
+    },
+    {
+      name: "use_tool",
+      description:
+        "Run a deferred tool found with find_tools. Supply its exact name and arguments matching its input schema. The tool's usual permissions and approvals apply.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          name: { type: "string" },
+          args: { type: "object", additionalProperties: true },
+        },
+        required: ["name", "args"],
+        additionalProperties: false,
+      },
+    },
+  ];
+}
+
 const scheduleCreateProperties = {
   name: { type: "string", description: "Short label shown in Routines." },
   prompt: {

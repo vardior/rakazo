@@ -179,6 +179,7 @@ function fixture({
         name: bot.name,
         title: bot.title,
         description: bot.description,
+        instructions: "",
         disabledBuiltinTools,
         computerId: "computer-1",
         computer: { id: "computer-1", scope: "dedicated" },
@@ -219,14 +220,14 @@ function fixture({
   const execute = vi.fn(async function* (call: ConnectorCall) {
     yield { type: "result" as const, data: { item: call.args.id } };
   });
-  let calls: { args: Record<string, unknown>; executionId: string }[] = [
+  let calls: { name?: string; args: Record<string, unknown>; executionId: string }[] = [
     { args: { id: "item-1" }, executionId: "call-1" },
   ];
   const runtimeRun = vi.fn(async function* (request: AgentRunRequest) {
     for (const call of calls) {
       const result = await request.executeTool!(
-        catalog ? "demo_execute_tool" : name,
-        catalog ? { id: `resource-1:${name}`, arguments: call.args } : call.args,
+        call.name ?? (catalog ? "demo_execute_tool" : name),
+        catalog && !call.name ? { id: `resource-1:${name}`, arguments: call.args } : call.args,
         call.executionId,
       );
       results.push(result);
@@ -308,6 +309,34 @@ function fixture({
 }
 
 describe("disabled builtins", () => {
+  it.each([
+    { name: "schedule_create", trigger: "user", disabledBuiltinTools: ["schedule_create"] },
+    { name: "browser_navigate", trigger: "user" },
+    { name: "message_bot", trigger: "tickets" },
+    { name: "shell", trigger: "created" },
+  ])(
+    "keeps $name unavailable to lookup, wrappers, and direct dispatch on $trigger runs",
+    async (options) => {
+      const f = fixture({ ...options, builtin: true });
+      f.setCalls([
+        { name: "find_tools", args: { query: options.name }, executionId: "lookup" },
+        { name: "use_tool", args: { name: options.name, args: {} }, executionId: "wrapped" },
+        { name: options.name, args: {}, executionId: "direct" },
+      ]);
+      await f.run();
+      if (options.trigger === "created") expect(f.results[0]).toHaveProperty("error");
+      else
+        expect(
+          (f.results[0] as { tools: Array<{ name: string }> }).tools.map((tool) => tool.name),
+        ).not.toContain(options.name);
+      expect(f.results[1]).toHaveProperty("error");
+      expect(f.results[2]).toHaveProperty("error");
+      expect(f.effects).toEqual([]);
+      expect(f.execute).not.toHaveBeenCalled();
+      expect(f.commit).not.toHaveBeenCalled();
+    },
+  );
+
   it("refuses a direct call before any effect or memory write", async () => {
     const f = fixture({
       name: "save_shared_memory",
@@ -632,7 +661,7 @@ describe("connector read-only metadata and approval enforcement", () => {
     });
 
     it.each(["ask", "error", "pass"] as const)(
-      "honors automatic review %s despite a read-only hint",
+      "honors automatic review %s through deferred dispatch despite a read-only hint",
       async (decision) => {
         reviewMock.mockResolvedValue({
           decision,
@@ -640,6 +669,18 @@ describe("connector read-only metadata and approval enforcement", () => {
           model: "scripted/checker",
         });
         const f = fixture({ catalog, name: "demo_send_message", autoReview: true });
+        f.setCalls([
+          {
+            name: "use_tool",
+            args: {
+              name: catalog ? "demo_execute_tool" : "demo_send_message",
+              args: catalog
+                ? { id: "resource-1:demo_send_message", arguments: { id: "item-1" } }
+                : { id: "item-1" },
+            },
+            executionId: "call-1",
+          },
+        ]);
         await f.run();
         expect(reviewMock).toHaveBeenCalledOnce();
         expect(reviewMock).toHaveBeenCalledWith(

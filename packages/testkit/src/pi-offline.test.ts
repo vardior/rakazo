@@ -3,10 +3,13 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AgentRunRequest, AgentRuntimeEvent, ConnectorTool } from "@rakazo/adapter-kit";
-import { PiAgentRuntime } from "@rakazo/adapters";
+import { builtinAgentTools, PiAgentRuntime, selectBuiltinToolsForRun } from "@rakazo/adapters";
 import * as Core from "@rakazo/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type ModelEmulatorRequest, startModelEmulator } from "./model-emulator.js";
+import { findDeferredTools, splitDeferredTools } from "../../adapters/src/deferred-tools.js";
+import { localProvider } from "../../adapters/src/pi-local-provider.js";
+import type { ModelEmulatorRequest } from "./model-emulator.js";
+import { startModelEmulator } from "./model-emulator.js";
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -403,6 +406,132 @@ describe("real Pi against an offline model HTTP endpoint", () => {
     expect(events.at(-1)).toEqual({ type: "done", text: promise });
   });
 
+  it("fits the default local window with stable tool declarations and deferred validation", async () => {
+    const split = splitDeferredTools(
+      selectBuiltinToolsForRun({
+        graphicalToolsAllowed: false,
+        pageBrowserAllowed: false,
+        groupId: null,
+        trigger: "user",
+        semanticMemoryEnabled: false,
+        messagingChannelRun: false,
+        historyRetrievalEnabled: true,
+      }),
+    );
+    const args = { name: "Daily reminder", prompt: "Report the summary.", cron: "0 9 * * *" };
+    const calls: string[] = [];
+    const server = await startModelEmulator({
+      steps: [
+        {
+          expect(request) {
+            expect(request.tools?.map((tool) => tool.function.name)).not.toContain(
+              "schedule_create",
+            );
+          },
+          response: {
+            type: "tool",
+            id: "lookup",
+            name: "find_tools",
+            arguments: { query: "schedule reminder recurring" },
+          },
+        },
+        {
+          expect(request) {
+            expect(JSON.parse(String(latestToolResult(request)?.content)).tools[0]).toMatchObject({
+              name: "schedule_create",
+              inputSchema: expect.any(Object),
+            });
+          },
+          response: {
+            type: "tool",
+            id: "invalid",
+            name: "use_tool",
+            arguments: { name: "schedule_create", args: { ...args, cron: 42 } },
+          },
+        },
+        {
+          expect(request) {
+            expect(JSON.parse(String(latestToolResult(request)?.content))).toMatchObject({
+              error: expect.stringContaining("invalid"),
+              inputSchema: expect.any(Object),
+            });
+          },
+          response: {
+            type: "tool",
+            id: "core-via-wrapper",
+            name: "use_tool",
+            arguments: { name: "shell", args: { command: "true" } },
+          },
+        },
+        {
+          expect(request) {
+            expect(JSON.parse(String(latestToolResult(request)?.content))).toMatchObject({
+              error: expect.stringContaining("find_tools"),
+            });
+          },
+          response: {
+            type: "tool",
+            id: "direct-deferred",
+            name: "schedule_create",
+            arguments: args,
+          },
+        },
+        {
+          expect(request) {
+            expect(JSON.parse(String(latestToolResult(request)?.content))).toMatchObject({
+              ok: true,
+            });
+          },
+          response: { type: "text", text: "Scheduled." },
+        },
+        { expect() {}, response: { type: "text", text: "Still scheduled." } },
+      ],
+    });
+    cleanups.push(() => server.close());
+    vi.stubEnv("RAKAZO_LOCAL_MODELS", server.model.id);
+    vi.stubEnv("RAKAZO_LOCAL_MODELS_URL", server.baseUrl);
+    vi.stubEnv("RAKAZO_LOCAL_CONTEXT_WINDOW", "");
+    vi.stubEnv("RAKAZO_LOCAL_MAX_TOKENS", "");
+    try {
+      const provider = localProvider()!;
+      expect(provider.getModels()[0]!.contextWindow).toBe(32_768);
+      const runtime = new PiAgentRuntime();
+      const events: AgentRuntimeEvent[] = [];
+      for (const prompt of ["Create a daily reminder.", "Confirm the reminder."])
+        await collect(
+          runtime.run(
+            runRequest(
+              { provider: "local", id: server.model.id },
+              {
+                ...split,
+                prompt,
+                executeTool: async (name, toolArgs) => {
+                  calls.push(name);
+                  return name === "find_tools"
+                    ? findDeferredTools(split.deferredTools, String(toolArgs.query))
+                    : { ok: true };
+                },
+              },
+            ),
+          ),
+          events,
+        );
+      server.assertComplete();
+      expect(calls).toEqual(["find_tools", "schedule_create"]);
+      expect(events.filter((event) => event.type === "tool").map((event) => event.name)).toEqual([
+        "find_tools",
+        "schedule_create",
+        "use_tool",
+        "schedule_create",
+      ]);
+      expect(events.filter((event) => event.type === "done")).toHaveLength(2);
+      for (const request of server.requests)
+        expect(JSON.stringify(request.tools)).toBe(JSON.stringify(server.requests[0]!.tools));
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it.each([undefined, "retrieval", "snapshots", "cache-aware"] as const)(
     "bounds actual initial and tool-loop requests with %s context",
     async (contextStrategy) => {
@@ -604,8 +733,11 @@ describe("real Pi against an offline model HTTP endpoint", () => {
           response: {
             type: "tool",
             id: "delegate",
-            name: "run_subagent",
-            arguments: { name: "helper", task: "Save hello to notes.txt." },
+            name: "use_tool",
+            arguments: {
+              name: "run_subagent",
+              args: { name: "helper", task: "Save hello to notes.txt." },
+            },
           },
         },
         {
@@ -614,6 +746,34 @@ describe("real Pi against an offline model HTTP endpoint", () => {
               false,
             );
             expect(JSON.stringify(request.messages)).toContain("Save hello to notes.txt.");
+          },
+          response: {
+            type: "tool",
+            id: "child-lookup",
+            name: "find_tools",
+            arguments: { query: "run_subagent" },
+          },
+        },
+        {
+          expect(request) {
+            expect(JSON.parse(String(latestToolResult(request)?.content))).toMatchObject({
+              tools: [],
+              names: ["schedule_list"],
+            });
+          },
+          response: {
+            type: "tool",
+            id: "child-delegation-denied",
+            name: "use_tool",
+            arguments: { name: "run_subagent", args: { name: "helper", task: "Delegate again." } },
+          },
+        },
+        {
+          expect(request) {
+            expect(JSON.parse(String(latestToolResult(request)?.content))).toMatchObject({
+              error: expect.stringContaining("find_tools"),
+            });
+            expect(JSON.stringify(request.tools)).toBe(JSON.stringify(server.requests[1]!.tools));
           },
           response: {
             type: "tool",
@@ -645,8 +805,9 @@ describe("real Pi against an offline model HTTP endpoint", () => {
         runRequest(
           { ...server.model, contextWindow: 8192, maxTokens: 1024 },
           {
-            tools: [
+            ...splitDeferredTools([
               writeTool,
+              builtinAgentTools.find((tool) => tool.name === "schedule_list")!,
               {
                 name: "run_subagent",
                 description: "Delegate a task",
@@ -656,7 +817,7 @@ describe("real Pi against an offline model HTTP endpoint", () => {
                   required: ["task"],
                 },
               },
-            ],
+            ]),
             executeTool: async () => ({ original: "large child evidence ".repeat(3000) }),
           },
         ),
@@ -666,9 +827,9 @@ describe("real Pi against an offline model HTTP endpoint", () => {
       throw error;
     });
     server.assertComplete();
-    expect(decisions).toHaveLength(4);
+    expect(decisions).toHaveLength(6);
     expect(decisions.every((decision) => decision.strategy === "retrieval")).toBe(true);
-    expect(decisions.filter((decision) => decision.agentId)).toHaveLength(2);
+    expect(decisions.filter((decision) => decision.agentId)).toHaveLength(4);
     expect(
       decisions.some((decision) => decision.agentId && decision.truncatedToolResults === 1),
     ).toBe(true);

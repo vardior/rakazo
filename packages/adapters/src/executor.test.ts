@@ -3,6 +3,12 @@ import { CLOUDFLARE_AI_GATEWAY_CONFIG_MESSAGE } from "@rakazo/contracts";
 import { ONCE_ROUTINE_CRON } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
+import { builtinAgentTools, CORE_BUILTIN_TOOL_NAMES } from "./builtin-tools.js";
+import {
+  findDeferredTools,
+  resolveDeferredToolCall,
+  splitDeferredTools,
+} from "./deferred-tools.js";
 import {
   appendToolCompletionAudit,
   createRunExecutor,
@@ -31,6 +37,80 @@ import { UnavailableModelForAuthError } from "./model-selection.js";
 import { RetiredModelCredentialError, serializeModelSecret } from "./pi-oauth.js";
 
 describe("bot tool permissions", () => {
+  const toolSelection = {
+    graphicalToolsAllowed: true,
+    historyRetrievalEnabled: true,
+    groupId: null,
+    trigger: "user",
+    semanticMemoryEnabled: false,
+    messagingChannelRun: false,
+  };
+
+  it("exposes only the core schemas and lookup controls within half the built-in size", () => {
+    const authorized = selectBuiltinToolsForRun(toolSelection);
+    const split = splitDeferredTools(authorized);
+    expect(split.tools.map((tool) => tool.name).sort()).toEqual(
+      [
+        ...authorized
+          .filter((tool) => CORE_BUILTIN_TOOL_NAMES.has(tool.name))
+          .map((tool) => tool.name),
+        "find_tools",
+        "use_tool",
+      ].sort(),
+    );
+    expect(Buffer.byteLength(JSON.stringify(split.tools))).toBeLessThan(
+      Buffer.byteLength(JSON.stringify(builtinAgentTools)) / 2,
+    );
+    expect(splitDeferredTools([...authorized].reverse())).toEqual(split);
+    expect(splitDeferredTools([])).toEqual({ tools: [], deferredTools: [] });
+    expect(
+      splitDeferredTools(authorized.filter((tool) => tool.name === "shell")).tools.map(
+        (tool) => tool.name,
+      ),
+    ).toEqual(["shell"]);
+  });
+
+  it("finds scheduling schemas, bounds matches, and reports available names on a miss", () => {
+    const { deferredTools } = splitDeferredTools(selectBuiltinToolsForRun(toolSelection));
+    const found = findDeferredTools(deferredTools, "schedule reminder recurring");
+    expect(found.tools[0]).toEqual(
+      builtinAgentTools.find((tool) => tool.name === "schedule_create"),
+    );
+    expect(findDeferredTools(deferredTools, "bot tool").tools.length).toBeLessThanOrEqual(5);
+    expect(findDeferredTools(deferredTools, "zzzz")).toEqual({
+      tools: [],
+      message: expect.stringContaining("No matching"),
+      names: deferredTools.map((tool) => tool.name),
+    });
+    for (const name of ["shell", "unknown", "use_tool", "find_tools"]) {
+      expect(resolveDeferredToolCall(deferredTools, { name, args: {} })).toMatchObject({
+        error: expect.stringContaining("find_tools"),
+      });
+    }
+  });
+
+  it.each([
+    [{ graphicalToolsAllowed: false, pageBrowserAllowed: false }, "launch_app"],
+    [{ disabledBuiltinTools: ["schedule_create"] }, "schedule_create"],
+    [{ trigger: "tickets" }, "message_bot"],
+    [{ messagingChannelRun: true }, "scratchpad_add"],
+    [{ groupId: "group" }, "message_bot"],
+    [{ semanticMemoryEnabled: false }, "recall_memory"],
+    [{ cloudAgentEnabled: false }, "cloud_agent_launch"],
+    [{ voiceCall: false }, "end_call"],
+  ])("keeps filtered %s tools outside lookup and deferred execution", (overrides, name) => {
+    const authorized = selectBuiltinToolsForRun({ ...toolSelection, ...overrides });
+    const split = splitDeferredTools(authorized);
+    expect(authorized.map((tool) => tool.name)).not.toContain(name);
+    expect(split.tools.map((tool) => tool.name)).not.toContain(name);
+    expect(
+      findDeferredTools(split.deferredTools, name).tools.map((tool) => tool.name),
+    ).not.toContain(name);
+    expect(resolveDeferredToolCall(split.deferredTools, { name, args: {} })).toMatchObject({
+      error: expect.any(String),
+    });
+  });
+
   it("never lets self-edit change disabled tools alongside an allowed field", () => {
     expect(parseUpdateBotPatch({ name: "Scout", disabledBuiltinTools: [] }, "Bot")).toEqual({
       patch: { name: "Scout" },
