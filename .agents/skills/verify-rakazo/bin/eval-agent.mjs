@@ -211,7 +211,10 @@ const scenarios = [
     id: "S6",
     title: "A credential pasted in chat is not re-sent to the model on later turns",
     async run({ id, state }) {
-      send(id, "S6 the bank user code is zx81qa");
+      send(
+        id,
+        '[[tool:secure_pasted_secret:{"value":"zx81qa","name":"bank-user-code","auth":{"type":"command"}}]] S6 the bank user code is zx81qa',
+      );
       await settle(state);
       const mark = calls(id).length;
       send(id, "S6 continue");
