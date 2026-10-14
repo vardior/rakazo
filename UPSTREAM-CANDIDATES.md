@@ -4,7 +4,7 @@ Fork-only tracker for bugs and design gaps worth raising on elie222/rakazo. Bran
 
 Evidence levels: **reproduced** means driven live with `verify-rakazo`; **observed** means seen during a live run but not isolated; **code-read** means inferred from source only.
 
-Fixes live on `fix/*` branches cut from `0394e92c`, one commit each (three for steering), with no fork-only files, so `git cherry-pick` onto `upstream/main` gives a PR-ready branch. Fork `main` merges them all and was verified live with `verify-rakazo` (evidence `20261013-213200-steering-fixed`). Each PR still needs the `finalize` skill, and any user-facing copy quoted in its description.
+Fixes 1–9 live on `fix/*` branches cut from `0394e92c`, one commit each (three for steering); fixes 10–17 are cut from `932534d7`, with no fork-only files, so `git cherry-pick` onto `upstream/main` gives a PR-ready branch. Fork `main` merges them all and was verified live with `verify-rakazo` (evidence `20261013-213200-steering-fixed`). Each PR still needs the `finalize` skill, and any user-facing copy quoted in its description.
 
 Checked for duplicates on 2026-10-13: no open or closed upstream issue covers these. #910 (free-text replies refused during `waiting_input`) is related but separate.
 
@@ -19,6 +19,14 @@ Checked for duplicates on 2026-10-13: no open or closed upstream issue covers th
 | 7 | Owner messages wait behind routine, webhook and intro runs | design | code-read | design only, no code | not filed |
 | 8 | Routine runs speak by default; silence is opt-in per prompt | design | code-read | `fix/routine-silence-default` 4a97ce5d | not filed |
 | 9 | Prior assistant turns are sent to the model as user messages | needs judgment | reproduced | `fix/history-assistant-roles` 6e112d93 | ask first |
+| 10 | A chat reply to a pending takeover is folded into another message and the browser is lost | bug | reproduced | `fix/takeover-chat-reply` c529ce34, 47970e2a | not filed |
+| 11 | A transient provider overload or dropped stream fails the run | bug | reproduced | `fix/transient-model-retry` 2ea9eca9 | not filed |
+| 12 | Websites with a third sign-in field cannot be filled from a saved login | gap | reproduced | `fix/login-extra-field` b9410a74, fff15f80 | not filed |
+| 13 | Prompt prefix changes between runs, defeating provider prompt caching | design | reproduced | `fix/cache-stable-context` fb2613df, bcd16f38 | not filed |
+| 14 | A credential pasted in chat is re-sent to the model on every later turn | bug | reproduced | `fix/pasted-secret-hygiene` 1904cb56 | not filed |
+| 15 | A run that loses the model mid-work fails silently | bug | reproduced | `fix/failed-run-visible` e1f457cf, 518a7a53, 47547433 | not filed |
+| 16 | Facts a tool returned in one run are gone in the next | design | reproduced | `fix/run-work-log` a00cc998 | not filed |
+| 17 | A reply that promises more work ends the run | bug | reproduced | `fix/promise-follow-through` f055d573 | not filed |
 
 ---
 
@@ -141,3 +149,74 @@ Checked for duplicates on 2026-10-13: no open or closed upstream issue covers th
 **Open question.** This may be deliberate (provider neutrality, or because tool calls from earlier runs are not preserved). Ask upstream before treating it as a bug.
 
 **Fix, pending that answer.** `fix/history-assistant-roles` 6e112d93 sends this bot's own earlier replies as text-only assistant messages; other group members' replies keep the quoted user form. Right before each call, a prior reply that would open the conversation or follow another assistant turn is sent quoted, so turns stay user-led for providers that require it. The recent-history window counts replies as turns, keeping its size. Verified live: request roles go `su`, `suau`, `suauau`. Unmeasured: real-provider behavior and the paid evals, which ran on the flattened layout.
+
+## Live scorecard (`verify-rakazo` `eval-agent.mjs`, three trials, fixture model)
+
+Scenarios S1–S9 are deterministic fixture drives of the real stack. Before = the deployed upstream build; after = fork `main` with 10–17 merged.
+
+| Scenario | Before | After |
+| --- | --- | --- |
+| S1 transient overload is retried and answered | 0/1 | 3/3 |
+| S2 a run that cannot reach the model is not silent | 0/1 | 3/3 |
+| S3 chat reply to a pending takeover keeps the browser and arrives as its own message | 0/1 | 3/3 |
+| S4 a tool fact from one run is available to the next | false pass | pending integration fix |
+| S5 a reply that promises more work is followed by that work | 0/1 | 3/3 |
+| S6 a pasted credential is not re-sent on later turns | 0/1 | 3/3 |
+| S7 consecutive runs share a cacheable prefix | first change mid-history | 3/3, first change at the latest turn |
+| S8 tool list identical across every call | 0/1 | 3/3 |
+| S9 saving a memory note keeps the next run's prefix | first change at message 1 | 3/3 |
+
+## 10. A chat reply to a pending takeover is folded into another message and the browser is lost
+
+**Description.** When a bot asks the user to take over the screen and the user answers in chat instead, the reply is merged into the run's continuation prompt, and the resumed run is built without browser tools because the computer is still marked as held for the takeover.
+
+**Steps to reproduce.** Drive a run to `request_takeover`, do not open the screen, reply in chat. The next model call lacks `browser_act` and the reply appears inside an "additional context" block.
+
+**Fix.** `fix/takeover-chat-reply`: a chat reply releases the takeover hold (opened or unopened) through the same release path the Done button uses, and the reply is delivered as its own user turn. Verified live (S3).
+
+## 11. A transient provider overload or dropped stream fails the run
+
+**Description.** A single `503 overloaded` or a dropped SSE stream (`terminated`) fails the whole run, even after tool work.
+
+**Fix.** `fix/transient-model-retry`: retries those failures with 2s, 8s and 20s backoff before failing, without replaying completed tool effects. Verified live (S1) and offline (dropped stream then overload after a tool call).
+
+## 12. Websites with a third sign-in field cannot be filled from a saved login
+
+**Description.** Banks often ask for a user code besides username and password. Saved logins hold only two fields.
+
+**Fix.** `fix/login-extra-field`: an optional labelled extra field on website logins, filled with `browser_act fill_secret field:"extra"`. User-facing copy is the label the user types; quote it in the PR.
+
+## 13. Prompt prefix changes between runs, defeating provider prompt caching
+
+**Description.** Mutable state (memory, scratchpad, tickets, recalled memory, time) sat in the system prompt, visual-context pruning slid by one message per call, and the recent-history window slid by one exchange per run, so each run rewrote the prefix providers cache.
+
+**Fix.** `fix/cache-stable-context`: static instructions and a stable tool list first, mutable state in the latest turn, pruning in batches, and the retrieval history window advancing in steps of its size. Logs `run.cache_usage`. Verified live (S7, S8, S9). Known remaining rewrite: older tool-result shortening changes the previous turn once.
+
+**Integration note.** Combined with 9, the window must count conversation turns the same way retention does (`isConversationTurn`); fork `main` carries that one-line adjustment in its merge commit.
+
+## 14. A credential pasted in chat is re-sent to the model on every later turn
+
+**Description.** If the user pastes a password or code in chat, it stays in history, compaction summaries and memory, and every later model call carries it.
+
+**Fix.** `fix/pasted-secret-hygiene`: `secure_pasted_secret` moves the value into encrypted storage as a command variable or a login field and replaces every copy in the chat, compaction summary and memory with `[saved as <name>]`; memory tools refuse protected values. Verified live (S6).
+
+**Integration note.** With 12, a pasted value can fill the extra field and a partial login may hold any one field; fork `main` carries this in merge commit 52ef0178 and 2af34e2e.
+
+## 15. A run that loses the model mid-work fails silently
+
+**Description.** When a run fails after progress messages, the thread just stops at the last progress message; web shows a transient alert, mobile the raw error.
+
+**Fix.** `fix/failed-run-visible`: for transient provider or connection failures, the run leaves a bot notice with Retry; Retry starts a new run with the request and a factual list of the failed attempt's tool calls. Other failures keep the existing error. User-facing copy to quote in the PR: "I didn't finish because the model provider is unavailable.", "I didn't finish because the connection dropped.", "Retry", "Could not retry", "This run cannot be retried.", "This failure is no longer the latest request." Verified live (S2).
+
+## 16. Facts a tool returned in one run are gone in the next
+
+**Description.** History across runs is text-only, so a balance a tool read in one run is unknown to the next run unless the bot repeated it in prose.
+
+**Fix.** `fix/run-work-log`: each bot reply stores a bounded, redacted record of the run's tool calls and results and renders it as a `[past work]` block in later model history. No user-facing copy.
+
+## 17. A reply that promises more work ends the run
+
+**Description.** A model replying "I'm continuing with the analysis now and will report back shortly." ends the run; nothing continues.
+
+**Fix.** `fix/promise-follow-through`: a deterministic English detector for explicit first-person commitments allows one internal follow-up turn asking the model to do the work or say what blocks it. Verified live (S5). Risk: heuristic, English only.
+
