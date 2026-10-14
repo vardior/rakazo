@@ -170,7 +170,7 @@ Scenarios S1–S9 are deterministic fixture drives of the real stack. Before = t
 | S7 consecutive runs share a cacheable prefix | first change mid-history | 3/3, first change at the latest turn |
 | S8 tool list identical across every call | 0/1 | 3/3 |
 | S10 a rarely used tool stays reachable while its schema is left out | not applicable (all 64 schemas sent) | 3/3, 31 tools and about 18k schema characters per call |
-| S11 an owner message during a routine is answered before the routine finishes | not measured | pending |
+| S11 an owner message during a routine is answered before the routine finishes | held until the routine ended (code-read) | 3/3, routine attempts yielded then completed |
 | S9 saving a memory note keeps the next run's prefix | first change at message 1 | 3/3 |
 
 ## 10. A chat reply to a pending takeover is folded into another message and the browser is lost
