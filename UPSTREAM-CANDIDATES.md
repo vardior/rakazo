@@ -10,24 +10,24 @@ Checked for duplicates on 2026-10-13: no open or closed upstream issue covers th
 
 | # | Title | Kind | Evidence | Fix | Upstream |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Steering sent during the final answer is missed by that run | bug | reproduced | `fix/steering` 3a92c2cd | not filed |
-| 2 | Steering continuation demotes the user's message to "Additional user context" | bug | reproduced | `fix/steering` 0cca295f | not filed |
+| 1 | Steering sent during the final answer is missed by that run | bug | reproduced | `fix/steering` 178f87f4 | not filed |
+| 2 | Steering continuation demotes the user's message to "Additional user context" | bug | reproduced | `fix/steering` 1ee523e9 | not filed |
 | 3 | ~~A run that fails before the model call leaves no error in the chat~~ | invalid | rechecked live | none needed | do not file |
-| 4 | Local provider's default 32k context window cannot fit the required tool context | bug | reproduced | `fix/context-budget-message` ee6ec2c2 (message only) | not filed |
-| 5 | A stopped request is re-sent to the model as an open request | needs judgment | reproduced | `fix/stopped-request-history` 25ad1afe | not filed |
-| 6 | Steering cannot interrupt a long model turn | design | reproduced | `fix/steering` 3ef80617 (depends on 1) | not filed |
-| 7 | Owner messages wait behind routine, webhook and intro runs | design | reproduced | `fix/owner-priority` dab6c368, 9af8c7bf | not filed |
-| 8 | Routine runs speak by default; silence is opt-in per prompt | design | code-read | `fix/routine-silence-default` 4a97ce5d | not filed |
-| 9 | Prior assistant turns are sent to the model as user messages | needs judgment | reproduced | `fix/history-assistant-roles` 6e112d93 | ask first |
-| 10 | A chat reply to a pending takeover is folded into another message and the browser is lost | bug | reproduced | `fix/takeover-chat-reply` c529ce34, 47970e2a | not filed |
-| 11 | A transient provider overload or dropped stream fails the run | bug | reproduced | `fix/transient-model-retry` 2ea9eca9 | not filed |
-| 12 | Websites with a third sign-in field cannot be filled from a saved login | gap | reproduced | `fix/login-extra-field` b9410a74, fff15f80 | not filed |
-| 13 | Prompt prefix changes between runs, defeating provider prompt caching | design | reproduced | `fix/cache-stable-context` fb2613df, bcd16f38 | not filed |
-| 14 | A credential pasted in chat is re-sent to the model on every later turn | bug | reproduced | `fix/pasted-secret-hygiene` 1904cb56, 692d400a | not filed |
-| 15 | A run that loses the model mid-work fails silently | bug | reproduced | `fix/failed-run-visible` e1f457cf, 518a7a53, 47547433 | not filed |
-| 16 | Facts a tool returned in one run are gone in the next | design | reproduced | `fix/run-work-log` a00cc998, 62c140f4 | not filed |
-| 17 | A reply that promises more work ends the run | bug | reproduced | `fix/promise-follow-through` f055d573 | not filed |
-| 18 | Every model call carries every tool schema | design | reproduced | `fix/tool-search` f19ec584, 5b72f3ad | not filed |
+| 4 | Local provider's default 32k context window cannot fit the required tool context | bug | reproduced | `fix/context-budget-message` 08317f5b (message only) | not filed |
+| 5 | A stopped request is re-sent to the model as an open request | needs judgment | reproduced | `fix/stopped-request-history` 2de7c78c | not filed |
+| 6 | Steering cannot interrupt a long model turn | design | reproduced | `fix/steering` a53c8760 (depends on 1) | not filed |
+| 7 | Owner messages wait behind routine, webhook and intro runs | design | reproduced | `fix/owner-priority` 4c6efef2, d8f4f455 | not filed |
+| 8 | Routine runs speak by default; silence is opt-in per prompt | design | code-read | `fix/routine-silence-default` c838092b | not filed |
+| 9 | Prior assistant turns are sent to the model as user messages | needs judgment | reproduced | `fix/history-assistant-roles` 4d75e0a6 | ask first |
+| 10 | A chat reply to a pending takeover is folded into another message and the browser is lost | bug | reproduced | `fix/takeover-chat-reply` 6a079d38, a4beb04d | not filed |
+| 11 | A transient provider overload or dropped stream fails the run | bug | reproduced | `fix/transient-model-retry` 835b4f1d | not filed |
+| 12 | Websites with a third sign-in field cannot be filled from a saved login | gap | reproduced | `fix/login-extra-field` 78cc9c8e, 25d0d0bf | not filed |
+| 13 | Prompt prefix changes between runs, defeating provider prompt caching | design | reproduced | `fix/cache-stable-context` d10daf93, 92ab2653 | not filed |
+| 14 | A credential pasted in chat is re-sent to the model on every later turn | bug | reproduced | `fix/pasted-secret-hygiene` 0051b60f, 8ea7b673 | not filed |
+| 15 | A run that loses the model mid-work fails silently | bug | reproduced | `fix/failed-run-visible` f68e5806, fcaeb591, fdb1fb77 | not filed |
+| 16 | Facts a tool returned in one run are gone in the next | design | reproduced | `fix/run-work-log` 7cb30170, c9ca101a | not filed |
+| 17 | A reply that promises more work ends the run | bug | reproduced | `fix/promise-follow-through` 201d0af9 | not filed |
+| 18 | Every model call carries every tool schema | design | reproduced | `fix/tool-search` 39bcc16e, 31128f7b | not filed |
 
 ---
 
@@ -47,7 +47,7 @@ Checked for duplicates on 2026-10-13: no open or closed upstream issue covers th
 
 **Where.** `packages/adapters/src/pi-runtime.ts` reads durable steering only in `prepareNextTurnWithContext`, which Pi's agent loop calls only when another tool turn follows. After a tool-free turn the loop checks its in-memory steering queue, which is empty, and ends. `packages/db/src/events.ts` `createPendingSteeringRun` then starts the continuation.
 
-**Fix.** `fix/steering` 3a92c2cd claims durable steering when a tool-free turn ends and steers it into the same run. A new `reply_complete` runtime event makes the executor publish the already-streamed reply as its own message. With 6 applied, most such steers become interrupts instead; this path covers a steer that lands after the stream ends.
+**Fix.** `fix/steering` 178f87f4 claims durable steering when a tool-free turn ends and steers it into the same run. A new `reply_complete` runtime event makes the executor publish the already-streamed reply as its own message. With 6 applied, most such steers become interrupts instead; this path covers a steer that lands after the stream ends.
 
 **Version.** 0394e92c
 
@@ -63,7 +63,7 @@ Checked for duplicates on 2026-10-13: no open or closed upstream issue covers th
 
 **Where.** `packages/db/src/events.ts` `createPendingSteeringRun` sets the task prompt to `Respond to the user's steering context.`; `packages/adapters/src/pi-runtime.ts` appends initially claimed steering under `Additional user context:` and removes those messages from history.
 
-**Fix.** `fix/steering` 0cca295f makes the continuation's task prompt the newest held message's text, and the runtime keeps that message and earlier held ones out of "Additional user context"; earlier ones stay in history as user turns. Two lifecycle assertions that pinned the old prompt were updated.
+**Fix.** `fix/steering` 1ee523e9 makes the continuation's task prompt the newest held message's text, and the runtime keeps that message and earlier held ones out of "Additional user context"; earlier ones stay in history as user turns. Two lifecycle assertions that pinned the old prompt were updated.
 
 **Version.** 0394e92c
 
@@ -97,7 +97,7 @@ Checked for duplicates on 2026-10-13: no open or closed upstream issue covers th
 
 **Fix sketch.** Measure the required context for the default tool set and either raise the default or validate the window when the model is connected.
 
-**Fix so far.** `fix/context-budget-message` ee6ec2c2 makes the failure actionable: `This chat needs about 38,600 tokens of context, but the selected model allows about 28,700; choose a model with a larger context window.` (user-facing copy; quote it in the PR). The default stays 32,768: the default non-graphical tool context measures about 36,800 tokens, and raising the budget past a real local model's window would only move the failure into the server. Validating the window at connect time is still open.
+**Fix so far.** `fix/context-budget-message` 08317f5b makes the failure actionable: `This chat needs about 38,600 tokens of context, but the selected model allows about 28,700; choose a model with a larger context window.` (user-facing copy; quote it in the PR). The default stays 32,768: the default non-graphical tool context measures about 36,800 tokens, and raising the budget past a real local model's window would only move the failure into the server. Validating the window at connect time is still open.
 
 **Version.** 0394e92c
 
@@ -113,7 +113,7 @@ Checked for duplicates on 2026-10-13: no open or closed upstream issue covers th
 
 **Where.** History assembly for the next run; there is no marker for a cancelled request.
 
-**Fix.** `fix/stopped-request-history` 25ad1afe appends `(The user stopped this request.)` to the model-facing history text of a user message whose source run was cancelled, including in compaction transcripts. Stored messages and the UI are unchanged. Verified live: the next call carries the note.
+**Fix.** `fix/stopped-request-history` 2de7c78c appends `(The user stopped this request.)` to the model-facing history text of a user message whose source run was cancelled, including in compaction transcripts. Stored messages and the UI are unchanged. Verified live: the next call carries the note.
 
 ## 6. Steering cannot interrupt a long model turn or tool call
 
@@ -121,7 +121,7 @@ Checked for duplicates on 2026-10-13: no open or closed upstream issue covers th
 
 **Evidence.** Scenario B: a steer sent 4s into a 10s tool-calling turn was delivered only when the turn ended, 5–6s later. Longer tools make the wait proportionally longer.
 
-**Fix.** `fix/steering` 3ef80617: while a reply streams, the runtime polls for steering once a second; on a hit it aborts only that model stream (a per-reply signal, so a finished stream is unaffected), drops the partial reply from the transcript, and continues the same run with the steer. The executor discards the partial text and clears the live preview. Running tools are not interrupted; cancelling tools safely is a separate design. Verified live: delivery dropped from 5–6s to about 1s.
+**Fix.** `fix/steering` a53c8760: while a reply streams, the runtime polls for steering once a second; on a hit it aborts only that model stream (a per-reply signal, so a finished stream is unaffected), drops the partial reply from the transcript, and continues the same run with the steer. The executor discards the partial text and clears the live preview. Running tools are not interrupted; cancelling tools safely is a separate design. Verified live: delivery dropped from 5–6s to about 1s.
 
 **Open question for upstream.** The poll claims steering under the thread row lock once a second per streaming run. Fine for one owner; a busy multi-user deployment may want a realtime notification instead.
 
@@ -145,7 +145,7 @@ Checked for duplicates on 2026-10-13: no open or closed upstream issue covers th
 
 **Proposal.** Default background runs to silence unless there is something worth the user's attention, with routines opting into always-report.
 
-**Fix.** `fix/routine-silence-default` 4a97ce5d rewrites the routine guidance so watch, check and monitor runs stay silent by default while scheduled reports and explicit always-report requests still post. It also treats `webhook` runs like routines (silent empty allowed, narration not promoted, no unread when silent), a wider change than the original issue that upstream should confirm. Not driven live; covered by an offline product journey through the real executor, Pi and webhook endpoint. Whether real models follow the new guidance is unmeasured.
+**Fix.** `fix/routine-silence-default` c838092b rewrites the routine guidance so watch, check and monitor runs stay silent by default while scheduled reports and explicit always-report requests still post. It also treats `webhook` runs like routines (silent empty allowed, narration not promoted, no unread when silent), a wider change than the original issue that upstream should confirm. Not driven live; covered by an offline product journey through the real executor, Pi and webhook endpoint. Whether real models follow the new guidance is unmeasured.
 
 ## 9. Prior assistant turns are sent to the model as user messages
 
@@ -153,7 +153,7 @@ Checked for duplicates on 2026-10-13: no open or closed upstream issue covers th
 
 **Open question.** This may be deliberate (provider neutrality, or because tool calls from earlier runs are not preserved). Ask upstream before treating it as a bug.
 
-**Fix, pending that answer.** `fix/history-assistant-roles` 6e112d93 sends this bot's own earlier replies as text-only assistant messages; other group members' replies keep the quoted user form. Right before each call, a prior reply that would open the conversation or follow another assistant turn is sent quoted, so turns stay user-led for providers that require it. The recent-history window counts replies as turns, keeping its size. Verified live: request roles go `su`, `suau`, `suauau`. Unmeasured: real-provider behavior and the paid evals, which ran on the flattened layout.
+**Fix, pending that answer.** `fix/history-assistant-roles` 4d75e0a6 sends this bot's own earlier replies as text-only assistant messages; other group members' replies keep the quoted user form. Right before each call, a prior reply that would open the conversation or follow another assistant turn is sent quoted, so turns stay user-led for providers that require it. The recent-history window counts replies as turns, keeping its size. Verified live: request roles go `su`, `suau`, `suauau`. Unmeasured: real-provider behavior and the paid evals, which ran on the flattened layout.
 
 ## Live scorecard (`verify-rakazo` `eval-agent.mjs`, three trials, fixture model)
 
@@ -207,7 +207,7 @@ Scenarios S1–S9 are deterministic fixture drives of the real stack. Before = t
 
 **Fix.** `fix/pasted-secret-hygiene`: `secure_pasted_secret` moves the value into encrypted storage as a command variable or a login field and replaces every copy in the chat, compaction summary and memory with `[saved as <name>]`; memory tools refuse protected values. Verified live (S6).
 
-**Integration note.** With 12, a pasted value can fill the extra field and a partial login may hold any one field; fork `main` carries this in merge commit 52ef0178 and 2af34e2e.
+**Integration note.** With 12, a pasted value can fill the extra field and a partial login may hold any one field; fork `main` carries this in merge commit 7233d71a and 8fa8aab6.
 
 ## 15. A run that loses the model mid-work fails silently
 
