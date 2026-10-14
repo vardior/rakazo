@@ -109,7 +109,11 @@ describe.skipIf(!enabled)("product history diagnostic loop", () => {
             );
             expect(
               request.tools?.some((tool) => tool.function.name === "CRM_READ_DIAGNOSTIC"),
-            ).toBe(true);
+            ).toBe(false);
+            expect(
+              request.tools?.find((tool) => tool.function.name === "find_tools")?.function
+                .description,
+            ).toContain("CRM_READ_DIAGNOSTIC");
           },
           response: {
             type: "tool",
