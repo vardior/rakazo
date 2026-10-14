@@ -1,5 +1,6 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AgentRuntimeEvent } from "@rakazo/adapter-kit";
 import { EncryptedSecretStore, PiAgentRuntime, ScriptedAgentRuntime } from "@rakazo/adapters";
@@ -438,7 +439,7 @@ describeIntegration("reusable credential lifecycle", () => {
     }
   });
 
-  it.each(["command", "username", "password"] as const)(
+  it.each(["command", "username", "password", "extra"] as const)(
     "secures pasted %s credentials across storage, model turns and memory",
     async (field) => {
       const value = "fake-pasted-credential+/=";
@@ -446,7 +447,9 @@ describeIntegration("reusable credential lifecycle", () => {
       const auth =
         field === "command"
           ? { type: "command" }
-          : { type: "login", origin: "https://bank.example.test", field };
+          : field === "extra"
+            ? { type: "login", origin: "https://bank.example.test", field, label: "User code" }
+            : { type: "login", origin: "https://bank.example.test", field };
       const seeded = await seedRun(`pasted-${field}`, `The bank code is ${value}`);
       const userMessage = await createThreadMessage(handles.prisma, {
         threadId: seeded.thread.id,

@@ -38,7 +38,8 @@ export const SecurePastedSecretInput = z.object({
   auth: RequestSecretAuth,
 });
 const StoredLoginSecretValue = LoginSecretValue.partial().refine(
-  (login) => login.username !== undefined || login.password !== undefined,
+  (login) =>
+    login.username !== undefined || login.password !== undefined || login.extra !== undefined,
 );
 
 function loginSecretValues(login: z.infer<typeof StoredLoginSecretValue>): string[] {
