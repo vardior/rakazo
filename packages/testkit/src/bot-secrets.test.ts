@@ -11,6 +11,7 @@ import { createLogger, createTestSink } from "../../logging/src/index.js";
 import { discardBotIntroFromCreate } from "./discard-bot-intro.js";
 
 const hasDb = process.env.VERIFY_DATABASE === "1" && Boolean(process.env.DATABASE_URL);
+const TEST_ENCRYPTION_KEY = "offline-bot-secrets-test-encryption-key";
 const describeIntegration = hasDb ? describe : describe.skip;
 const destination = {
   name: "example_api",
@@ -38,6 +39,7 @@ describeIntegration("reusable credential lifecycle", () => {
       logger: createLogger({ service: "rakazo-test", level: "debug", sinks: [logs] }),
       databaseUrl: process.env.DATABASE_URL!,
       dataDir,
+      encryptionKey: TEST_ENCRYPTION_KEY,
       sandboxProvider: "fake",
       agentRuntime: "scripted",
       wakeupDriver: "memory",
@@ -326,7 +328,7 @@ describeIntegration("reusable credential lifecycle", () => {
       origin: "https://login.example.test",
       auth: { type: "login" as const },
     };
-    const store = new EncryptedSecretStore(process.env.ENCRYPTION_KEY!);
+    const store = new EncryptedSecretStore(TEST_ENCRYPTION_KEY);
     const oldValue = JSON.stringify({ username: "fake-user", password: "fake-password" });
     await rpc(seeded.cookie, "botSecrets/put", {
       botId: seeded.bot.id,
