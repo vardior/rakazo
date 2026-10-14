@@ -557,7 +557,10 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
         ).toEqual([
           expect.objectContaining({ id: writeEffect.id, status: "completed", request: writeArgs }),
         ]);
-        const events = await handles.prisma.event.findMany({ where: { runId: sent.runId } });
+        const events = await handles.prisma.event.findMany({
+          where: { runId: sent.runId },
+          orderBy: { seq: "asc" },
+        });
         const called = events
           .filter((event) => event.type === "agent.tool.called")
           .map((event) => (event.payload as { name: string }).name);

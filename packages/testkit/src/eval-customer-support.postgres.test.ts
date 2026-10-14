@@ -18,14 +18,19 @@ describe.skipIf(!databaseAvailable)("offline Slack customer-support eval", () =>
         {
           expect(request) {
             expect(JSON.stringify(request.messages)).toContain("Fairhaven Robotics");
-            expect(request.tools?.map((entry) => entry.function.name)).toEqual(
-              expect.arrayContaining([
-                "SALESFORCE_SEARCH_ACCOUNTS",
-                "SALESFORCE_LIST_OPPORTUNITIES",
-                "ZENDESK_SEARCH_ORGANIZATIONS",
-                "ZENDESK_LIST_TICKETS",
-              ]),
-            );
+            const connectorNames = [
+              "SALESFORCE_SEARCH_ACCOUNTS",
+              "SALESFORCE_LIST_OPPORTUNITIES",
+              "ZENDESK_SEARCH_ORGANIZATIONS",
+              "ZENDESK_LIST_TICKETS",
+            ];
+            const sent = request.tools?.map((entry) => entry.function.name) ?? [];
+            expect(sent).toEqual(expect.arrayContaining(["find_tools", "use_tool"]));
+            expect(sent.filter((name) => connectorNames.includes(name))).toEqual([]);
+            const catalog =
+              request.tools?.find((entry) => entry.function.name === "find_tools")?.function
+                .description ?? "";
+            for (const name of connectorNames) expect(catalog).toContain(name);
           },
           response: {
             type: "tool",
