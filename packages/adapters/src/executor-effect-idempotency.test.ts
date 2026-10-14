@@ -109,6 +109,7 @@ function fixture(runId = "run-1") {
   const prisma = {
     run: {
       findUnique: vi.fn(async () => run),
+      findFirst: vi.fn(async () => null),
       findUniqueOrThrow: vi.fn(async () => run),
       updateMany: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
         Object.assign(run, data);

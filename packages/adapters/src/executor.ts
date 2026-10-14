@@ -72,12 +72,14 @@ import {
   inferAttachmentMimeType,
   isBackgroundRunTrigger,
   isCallClientNonce,
+  isConversationalRun,
   isMessagingChannelRun,
   isOneShotRoutineCrons,
   isTerminal,
   messagingChannelId,
   messagingChannelPrivacyBlock,
   messagingDmSurfaceNote,
+  NON_CONVERSATIONAL_RUN_TRIGGERS,
   nextCronDateAcross,
   nextFence,
   planActionGate,
@@ -2628,6 +2630,7 @@ export function desktopProtectionGuardMessage(reason: string): string {
 
 /** Cap the roster so a large Space cannot flood the prompt. */
 const BOT_DIRECTORY_LIMIT = 40;
+const YIELDED_RUN_PROGRESS_CHARS = 4_000;
 const MISSING_MODEL_MESSAGE = "Connect a model in Settings before running bots.";
 
 function runtimeFallbackModel(runtime: AgentRuntime) {
@@ -3303,6 +3306,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
         await requeueComputerRun(deps, runId, workerId, fence, resumeCheckpoint, heldForTakeover);
         return;
       }
+      if (!resumeHeldLease && (await waitsForBotRun(deps.prisma, run))) {
+        await requeueComputerRun(deps, runId, workerId, fence, null);
+        return;
+      }
       let computerLease: ComputerExecutionLease | null = null;
       try {
         computerLease = await acquireComputerExecutionLease(deps.prisma, {
@@ -3328,6 +3335,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
       let leaseValid = true;
       let lastLeaseCheckAt = 0;
       let retainComputerLease = false;
+      let yieldedToConversation = false;
       let screenRelease: { computer: ComputerRef; context: AdapterContext } | undefined;
       let runAbortController: AbortController | null = null;
       let detachShutdown: (() => void) | undefined;
@@ -6361,10 +6369,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
           { exposedToolNames: new Set(tools.map((tool) => tool.name)) },
         );
         const replyContext = await loadReplyContext(deps.prisma, thread.id, run.sourceMessageId);
+        const yieldedResumeNote = isConversationalRun(run.trigger)
+          ? undefined
+          : await loadYieldedRunResumeNote(deps.prisma, runId);
         const prompt = [
           replyContext,
           basePrompt,
           takeoverResume?.promptNote,
+          yieldedResumeNote,
           approvalContinuation,
           // A hang-up turn is read, not heard: no spoken-reply constraint.
           voiceCall && !callEndRun ? voiceCallInstruction(disabledBuiltinTools) : undefined,
@@ -6620,6 +6632,15 @@ export function createRunExecutor(deps: ExecutorDeps) {
               claimSteering: scripted
                 ? undefined
                 : async (seenIds) => {
+                    if (
+                      !resumeHeldLease &&
+                      !isConversationalRun(run.trigger) &&
+                      (await conversationIsWaiting(deps.prisma, run))
+                    ) {
+                      yieldedToConversation = true;
+                      runAbortController?.abort();
+                      return [];
+                    }
                     const steering = await deps.events.claimSteering({
                       threadId: thread.id,
                       botId: bot.id,
@@ -6675,6 +6696,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             context,
           );
           for await (const event of withRuntimeCleanup(runtimeEvents, runAbortController)) {
+            if (yieldedToConversation) break;
             if (approvalPausePending) return;
             if (!leaseValid) return;
             const now = Date.now();
@@ -7021,6 +7043,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
           }
 
           if (approvalPausePending || !leaseValid) return;
+          if (yieldedToConversation) {
+            await flushProgress();
+            await workspaceCheckpoint.flush();
+            return;
+          }
           approvedEffectReplays.assertDrained();
           pendingProgress += progressRedactor.finish();
           await flushProgress();
@@ -7189,6 +7216,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           if (!terminalCheckpointComplete) {
             await workspaceCheckpoint.flush().catch(() => undefined);
           }
+          if (yieldedToConversation) return;
           const message = redactSecrets(
             error instanceof Error ? error.message : String(error),
             runSecrets,
@@ -7292,9 +7320,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
         await deps.prisma.attempt
           .updateMany({
             where: { id: attempt.id, status: "running" },
-            data: { status: "interrupted", finishedAt: new Date() },
+            data: {
+              status: yieldedToConversation ? "yielded" : "interrupted",
+              finishedAt: new Date(),
+            },
           })
           .catch(() => undefined);
+        if (yieldedToConversation) await yieldRunToConversation(deps, run, workerId, fence);
       }
     },
   };
@@ -8132,6 +8164,94 @@ async function requeueComputerRun(
     ...runContinueJob(runId),
     availableAt: new Date(Date.now() + computerRetryDelay(fence)),
   });
+}
+
+function executingRunWhere() {
+  return { status: { in: ["leased", "running"] }, leaseExpiresAt: { gt: new Date() } };
+}
+
+function conversationRunWhere(run: { id: string; spaceId: string; botId: string }) {
+  return {
+    spaceId: run.spaceId,
+    botId: run.botId,
+    id: { not: run.id },
+    trigger: { notIn: [...NON_CONVERSATIONAL_RUN_TRIGGERS] },
+  };
+}
+
+async function conversationIsWaiting(
+  prisma: PrismaClient,
+  run: { id: string; spaceId: string; botId: string },
+): Promise<boolean> {
+  const waiting = await prisma.run.findFirst({
+    where: {
+      ...conversationRunWhere(run),
+      OR: [{ status: "queued" }, executingRunWhere()],
+    },
+    select: { id: true },
+  });
+  return Boolean(waiting);
+}
+
+async function waitsForBotRun(
+  prisma: PrismaClient,
+  run: { id: string; spaceId: string; botId: string; trigger: string },
+): Promise<boolean> {
+  if (!isConversationalRun(run.trigger)) return conversationIsWaiting(prisma, run);
+  const background = await prisma.run.findFirst({
+    where: {
+      spaceId: run.spaceId,
+      botId: run.botId,
+      id: { not: run.id },
+      trigger: { in: [...NON_CONVERSATIONAL_RUN_TRIGGERS] },
+      ...executingRunWhere(),
+    },
+    select: { id: true },
+  });
+  return Boolean(background);
+}
+
+async function yieldRunToConversation(
+  deps: ExecutorDeps,
+  run: { id: string; spaceId: string; botId: string },
+  workerId: string,
+  fence: number,
+): Promise<void> {
+  await requeueComputerRun(deps, run.id, workerId, fence, null);
+  const waiting = await deps.prisma.run.findMany({
+    where: { ...conversationRunWhere(run), status: "queued" },
+    select: { id: true },
+  });
+  await Promise.all(waiting.map((queued) => deps.jobs.enqueue(runContinueJob(queued.id))));
+}
+
+async function loadYieldedRunResumeNote(
+  prisma: PrismaClient,
+  runId: string,
+): Promise<string | undefined> {
+  const yielded = await prisma.attempt.count({ where: { runId, status: "yielded" } });
+  if (yielded === 0) return undefined;
+  const progress = await prisma.event.findMany({
+    where: { runId, type: { in: ["thread.progress", "agent.tool.called"] } },
+    orderBy: { seq: "asc" },
+    select: { type: true, payload: true },
+  });
+  const steps = progress
+    .map(({ type, payload }) => {
+      const fields = (payload ?? {}) as { name?: unknown; delta?: unknown; text?: unknown };
+      if (type === "agent.tool.called") return `\n[${String(fields.name)}]\n`;
+      if (typeof fields.delta === "string") return fields.delta;
+      return typeof fields.text === "string" && fields.text ? `${fields.text}\n` : "";
+    })
+    .join("")
+    .trim()
+    .slice(-YIELDED_RUN_PROGRESS_CHARS);
+  return [
+    "This run was paused so the user could be answered first. Its earlier steps already ran and their results on the computer and in files are kept. Continue from where it stopped without repeating finished steps.",
+    steps ? `Progress before the pause:\n${steps}` : undefined,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 function redactBlocks(blocks: MessageBlock[], secrets: string[]): MessageBlock[] {

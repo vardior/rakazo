@@ -179,6 +179,204 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
       }
     }
   }, 30_000);
+
+  it("answers the owner during a routine before the routine resumes and finishes", async () => {
+    const fixtureKey = "offline-priority-fixture-key";
+    let handles: Awaited<ReturnType<typeof import("../../../apps/api/src/app.ts").createApp>>;
+    let routineRunId = "";
+    let ownerRunId = "";
+    let routineAtModel: () => void = () => undefined;
+    const routineReachedModel = new Promise<void>((resolve) => {
+      routineAtModel = resolve;
+    });
+    let ownerMessageSent: () => void = () => undefined;
+    const ownerMessageLanded = new Promise<void>((resolve) => {
+      ownerMessageSent = resolve;
+    });
+    const model = await startModelEmulator({
+      apiKey: fixtureKey,
+      steps: [
+        {
+          async expect(request) {
+            expect(JSON.stringify(request.messages)).toContain("Collect the weekly numbers.");
+            routineAtModel();
+            await ownerMessageLanded;
+          },
+          response: {
+            type: "tool",
+            id: "routine-write",
+            name: "write_file",
+            arguments: { path: "notes/weekly.txt", content: "part one" },
+          },
+        },
+        {
+          async expect(request) {
+            expect(JSON.stringify(request.messages)).toContain("What is the status?");
+            const routineRun = await handles.prisma.run.findUniqueOrThrow({
+              where: { id: routineRunId },
+            });
+            expect(routineRun.status).toBe("queued");
+            expect(
+              await handles.prisma.attempt.count({
+                where: { runId: routineRunId, status: "running" },
+              }),
+            ).toBe(0);
+          },
+          response: { type: "text", text: "Status: the weekly numbers are in progress." },
+        },
+        {
+          async expect(request) {
+            const prompt = JSON.stringify(request.messages);
+            expect(prompt).toContain("Collect the weekly numbers.");
+            expect(prompt).toContain("This run was paused so the user could be answered first.");
+            expect(prompt).toContain("Writing notes/weekly.txt");
+            expect(prompt).toContain("[write_file]");
+            expect(
+              await handles.prisma.run.findUniqueOrThrow({ where: { id: ownerRunId } }),
+            ).toMatchObject({ status: "completed" });
+          },
+          response: { type: "text", text: "Weekly numbers collected." },
+        },
+      ],
+    });
+    const dataDir = await mkdtemp(path.join(tmpdir(), "rakazo-offline-priority-"));
+    let stop: (() => Promise<void>) | undefined;
+    try {
+      const { createApp } = await import("../../../apps/api/src/app.ts");
+      handles = await createApp({
+        databaseUrl: process.env.DATABASE_URL!,
+        realtimeDatabaseUrl: process.env.DATABASE_URL!,
+        authUrl: fixtureOrigin,
+        webOrigin: fixtureOrigin,
+        dataDir,
+        sandboxProvider: "fake",
+        agentRuntime: "pi",
+        wakeupDriver: "memory",
+        signupsEnabled: "true",
+        composio: new ComposioEmulator(),
+        encryptionKey: "offline-model-fixture-encryption-key",
+      });
+      stop = handles.stop;
+      const signup = await handles.app.request("/api/auth/sign-up/email", {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: fixtureOrigin },
+        body: JSON.stringify({
+          email: `offline-priority-${randomUUID()}@rakazo.test`,
+          password: "password12",
+          name: "Offline fixture",
+        }),
+      });
+      expect(signup.status).toBeLessThan(400);
+      const cookie = sessionCookieHeader(signup);
+      await rpc(handles.app, cookie, "models/connect", {
+        provider: model.model.provider,
+        modelId: model.model.id,
+        baseUrl: model.baseUrl,
+        apiKey: fixtureKey,
+        contextWindow: 160_000,
+        maxTokens: 4096,
+      });
+      const bot = await rpc<{ id: string }>(handles.app, cookie, "bots/create", {
+        name: "Routine fixture",
+        title: "",
+        description: "",
+        instructions: "Complete the task.",
+        notifyOnFinish: false,
+      });
+      await discardBotIntroRun(handles, cookie, bot.id);
+      const routine = await rpc<{ id: string }>(handles.app, cookie, "routines/create", {
+        botId: bot.id,
+        name: "Weekly numbers",
+        prompt: "Collect the weekly numbers.",
+        crons: ["0 9 * * 1"],
+        timezone: "UTC",
+        notify: false,
+        active: true,
+      });
+      const dueAt = new Date(Date.now() - 1_000);
+      await handles.prisma.routine.update({
+        where: { id: routine.id },
+        data: { nextRunAt: dueAt },
+      });
+      await handles.executor.wakeRoutine(routine.id, dueAt.toISOString());
+      const scheduled = await handles.prisma.routine.findUniqueOrThrow({
+        where: { id: routine.id },
+      });
+      routineRunId = (
+        await handles.prisma.run.findFirstOrThrow({
+          where: { routineId: routine.id },
+          select: { id: true },
+        })
+      ).id;
+      await routineReachedModel;
+
+      const sent = await rpc<{ runId: string }>(handles.app, cookie, "threads/send", {
+        botId: bot.id,
+        text: "What is the status?",
+      });
+      ownerRunId = sent.runId;
+      expect(ownerRunId).not.toBe(routineRunId);
+      ownerMessageSent();
+
+      await expect
+        .poll(
+          async () => {
+            const run = await handles.prisma.run.findUniqueOrThrow({
+              where: { id: routineRunId },
+              select: { status: true },
+            });
+            if (run.status === "failed") model.assertComplete();
+            return run.status;
+          },
+          { timeout: 30_000, interval: 100 },
+        )
+        .toBe("completed");
+      model.assertComplete();
+
+      const [ownerRun, routineRun, routineAttempts, storedRoutine] = await Promise.all([
+        handles.prisma.run.findUniqueOrThrow({ where: { id: ownerRunId } }),
+        handles.prisma.run.findUniqueOrThrow({ where: { id: routineRunId } }),
+        handles.prisma.attempt.findMany({
+          where: { runId: routineRunId },
+          orderBy: { startedAt: "asc" },
+          select: { status: true },
+        }),
+        handles.prisma.routine.findUniqueOrThrow({ where: { id: routine.id } }),
+      ]);
+      expect(ownerRun).toMatchObject({ status: "completed", trigger: "user" });
+      expect(routineRun).toMatchObject({ status: "completed", error: null });
+      expect(routineAttempts.map((attempt) => attempt.status)).toEqual(["yielded", "completed"]);
+      expect(storedRoutine).toMatchObject({
+        active: true,
+        nextRunAt: scheduled.nextRunAt,
+        lastRunAt: scheduled.lastRunAt,
+      });
+      expect(await handles.prisma.run.count({ where: { routineId: routine.id } })).toBe(1);
+      expect(
+        await handles.prisma.event.count({ where: { runId: routineRunId, type: "run.failed" } }),
+      ).toBe(0);
+      const replies = await handles.prisma.message.findMany({
+        where: { threadId: routineRun.threadId, role: "bot" },
+        orderBy: { seq: "asc" },
+        select: { runId: true, blocks: true },
+      });
+      expect(replies.map((reply) => reply.runId)).toEqual([ownerRunId, routineRunId]);
+      expect(JSON.stringify(replies[0]?.blocks)).toContain("Status: the weekly numbers");
+      expect(JSON.stringify(replies[1]?.blocks)).toContain("Weekly numbers collected.");
+      const file = await rpc<{ content: string }>(handles.app, cookie, "computer/readFile", {
+        botId: bot.id,
+        path: "notes/weekly.txt",
+      });
+      expect(file.content).toBe("part one");
+    } finally {
+      try {
+        await stop?.();
+      } finally {
+        await model.close();
+        await rm(dataDir, { recursive: true, force: true });
+      }
+    }
+  }, 60_000);
 });
 
 async function rpc<T>(
