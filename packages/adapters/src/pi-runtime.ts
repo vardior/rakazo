@@ -99,6 +99,29 @@ const SILENT_TOOL_CONTINUATION_PROMPT =
   "Continue the original task from the latest tool result. Do not stop after a tool call; use any remaining tools needed, then give the user the final answer.";
 const SILENT_ALLOWED_TOOL_CONTINUATION_PROMPT =
   "Continue the original task from the latest tool result. If you were instructed to stay silent when there is nothing to report, follow that instruction for the entire final assistant reply. Otherwise use any remaining tools needed, then give the user the final answer.";
+const MAX_UNFINISHED_WORK_CONTINUATIONS = 1;
+const UNFINISHED_WORK_CONTINUATION_PROMPT =
+  "You said you would continue. Do that work now with your tools, or tell the user plainly what is blocking you.";
+
+export function commitsToUnfinishedWork(text: string): boolean {
+  const reply = text.replace(/```[\s\S]*?```|`[^`\n]*`|^>.*$/gm, "").replace(/[‘’]/g, "'");
+  if (
+    /\?/.test(reply) ||
+    /\b(?:once|after|when|if|until|unless)\s+(?:you|your)\b/i.test(reply) ||
+    /\bi(?:'ll| will)\s+wait\b|\bi(?:'m| am)\s+waiting\b|\b(?:waiting|awaiting)\s+(?:for\s+)?(?:you|your|approval|permission)\b/i.test(
+      reply,
+    ) ||
+    /\b(?:need|require)\s+(?:you\s+to|your\s+(?:answer|response|approval|permission|confirmation|input)|(?:an?\s+)?(?:approval|permission))\b/i.test(
+      reply,
+    ) ||
+    /\b(?:can't|cannot|unable to)\s+(?:continue|proceed|retrieve|access|work)\b/i.test(reply)
+  ) {
+    return false;
+  }
+  return /(?:^|[.!…]\s+|\n)\s*(?:i(?:'m| am)\s+(?:(?:still|now|currently)\s+)?(?:continuing\b|(?:working|back)\s+on\b|(?:retrieving|collecting|gathering|checking|analy[sz]ing|calculating|investigating|reviewing|processing|searching|fetching)\b)|i(?:'ll| will)\s+(?:continue\b|keep\s+working\b|carry\s+on\b|resume\b|report\s+back\b|get\s+back\s+to\s+you\b|(?:retrieve|collect|gather|check|analy[sz]e|calculate|investigate|review|process|search|fetch|finish|work)\b)|working\s+on\s+it\b)/i.test(
+    reply,
+  );
+}
 // Shown as a failed-run error, not an assistant message. Asking the user to
 // continue stores that sentence as the reply, and the next "continue" runs
 // tools and misses a final answer again.
@@ -329,6 +352,21 @@ export class PiAgentRuntime implements AgentRuntime {
         const hasBackups = Boolean(request.fallbackModels?.length);
         let agent: Agent;
         let activeStreamTarget = host.activeModel;
+        const claimPendingSteering = async () => {
+          if (!request.claimSteering) return undefined;
+          const steering = await request.claimSteering([...seenSteeringIds]);
+          if (steering.length === 0) return undefined;
+          seenSteeringIds.push(...steering.map((item) => item.id));
+          for (const item of steering) {
+            const images = toPiImages(item.images);
+            agent.steer({
+              role: "user",
+              content: images.length ? [{ type: "text", text: item.text }, ...images] : item.text,
+              timestamp: Date.now(),
+            });
+          }
+          return undefined;
+        };
         const fallbackState: FallbackStreamState = {
           request,
           getActive: () => activeStreamTarget,
@@ -438,21 +476,7 @@ export class PiAgentRuntime implements AgentRuntime {
               turnSignal,
             );
           },
-          prepareNextTurnWithContext: async () => {
-            if (!request.claimSteering) return undefined;
-            const steering = await request.claimSteering([...seenSteeringIds]);
-            if (steering.length === 0) return undefined;
-            seenSteeringIds.push(...steering.map((item) => item.id));
-            for (const item of steering) {
-              const images = toPiImages(item.images);
-              agent.steer({
-                role: "user",
-                content: images.length ? [{ type: "text", text: item.text }, ...images] : item.text,
-                timestamp: Date.now(),
-              });
-            }
-            return undefined;
-          },
+          prepareNextTurnWithContext: claimPendingSteering,
           initialState: {
             systemPrompt,
             model: completionModel,
@@ -478,6 +502,7 @@ export class PiAgentRuntime implements AgentRuntime {
         let toolCalls = 0;
         let toolActivityShowing = false;
         let silentToolContinuations = 0;
+        let unfinishedWorkContinuations = 0;
         let toolWorkPendingFinal = false;
         // Text streamed before this point is tool-turn narration. Only text after
         // it counts as the final reply, including when the completed message omits it.
@@ -553,6 +578,28 @@ export class PiAgentRuntime implements AgentRuntime {
                   content: request.allowSilentEmpty
                     ? SILENT_ALLOWED_TOOL_CONTINUATION_PROMPT
                     : SILENT_TOOL_CONTINUATION_PROMPT,
+                  timestamp: Date.now(),
+                });
+              }
+            }
+            if (
+              !hasToolCalls &&
+              !hasToolResults &&
+              !host.pausePending &&
+              !signal.aborted &&
+              !providerFailureText(event.message) &&
+              !host.toolCallBudget.exceeded &&
+              (host.toolCallBudget.limit <= 0 ||
+                host.toolCallBudget.count < host.toolCallBudget.limit) &&
+              unfinishedWorkContinuations < MAX_UNFINISHED_WORK_CONTINUATIONS &&
+              commitsToUnfinishedWork(messageText)
+            ) {
+              await claimPendingSteering();
+              if (!signal.aborted && !agent.hasQueuedMessages()) {
+                unfinishedWorkContinuations += 1;
+                agent.followUp({
+                  role: "user",
+                  content: UNFINISHED_WORK_CONTINUATION_PROMPT,
                   timestamp: Date.now(),
                 });
               }
