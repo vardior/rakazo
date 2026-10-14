@@ -30,11 +30,15 @@ describe.skipIf(!enabled)("persisted source-verified history followups", () => {
       const followup = (request: ModelEmulatorRequest, index: number) => {
         const serialized = JSON.stringify(request.messages);
         expect(serialized).toContain(questions[index]);
-        expect(
-          request.messages.filter(
-            (row) => row.role === "assistant" && row.content === verifiedReply,
-          ),
-        ).toHaveLength(index);
+        const replies = request.messages.filter(
+          (row) =>
+            row.role === "assistant" &&
+            String(row.content).split("\n[past work]\n")[0] === verifiedReply,
+        );
+        expect(replies).toHaveLength(index);
+        expect(String(replies[0]!.content)).toContain("[past work]");
+        expect(String(replies[0]!.content)).toContain('"tool":"read_history"');
+        expect(String(replies[0]!.content)).toContain("[/past work]");
         expect(serialized).not.toContain(`Assistant: ${verifiedReply}`);
         expect(serialized).toContain("do not repeat retrieval solely because the user asks again");
       };

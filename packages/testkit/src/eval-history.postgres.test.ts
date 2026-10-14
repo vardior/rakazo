@@ -45,7 +45,9 @@ describe.skipIf(!databaseAvailable)("eval history accounting", () => {
             const content = String(past!.content);
             expect(content).not.toContain(fixtureKey);
             expect(content).toContain("[redacted]");
-            expect(content).toContain("Assistant: Checked.");
+            expect(past!.role).toBe("assistant");
+            expect(content.startsWith("Checked.\n[past work]\n")).toBe(true);
+            expect(content).not.toContain("Assistant: Checked.");
             expect(content.indexOf("[past work]")).toBeGreaterThan(content.indexOf("Checked."));
             const record = content.slice(
               content.indexOf("[past work]"),
@@ -103,13 +105,13 @@ describe.skipIf(!databaseAvailable)("eval history accounting", () => {
             }),
         },
       );
+      model.assertComplete();
       expect(result).toMatchObject({
         status: "passed",
         toolCalls: 1,
         modelCalls: 4,
         cleanupFailed: false,
       });
-      model.assertComplete();
     } finally {
       await model.close();
       await rm(dataDir, { recursive: true, force: true });

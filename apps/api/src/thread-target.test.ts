@@ -3125,6 +3125,7 @@ describe("stopThreadRuns", () => {
       },
       event: {
         create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => data),
+        findMany: vi.fn().mockResolvedValue([]),
         deleteMany: vi.fn().mockResolvedValue({ count: 2 }),
       },
     };
@@ -3255,6 +3256,7 @@ describe("stopThreadRuns", () => {
       },
       event: {
         create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => data),
+        findMany: vi.fn().mockResolvedValue([]),
         deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
     };
@@ -3351,6 +3353,7 @@ describe("stopThreadRuns", () => {
           created.push(data);
           return data;
         }),
+        findMany: vi.fn().mockResolvedValue([]),
         deleteMany: vi.fn(async () => {
           writes.push("event.deleteMany");
           return { count: 4 };
