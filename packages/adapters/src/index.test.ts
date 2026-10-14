@@ -2,6 +2,7 @@ import { createCipheriv, createHash } from "node:crypto";
 import { BUILTIN_TOOL_NAMES } from "@rakazo/contracts";
 import { describe, expect, it } from "vitest";
 import { agentConnectionTools, builtinAgentTools } from "./builtin-tools.js";
+import { splitDeferredTools } from "./deferred-tools.js";
 import { selectBuiltinToolsForRun } from "./executor.js";
 import { FakeSandboxProvider } from "./fake-sandbox.js";
 import { inferScript, ScriptedAgentRuntime } from "./scripted-runtime.js";
@@ -227,6 +228,12 @@ describe("builtin tools", () => {
       (tool) => tool.name,
     );
     expect(enabled.filter((name) => ticketNames.includes(name))).toEqual(ticketNames);
+    const exposed = splitDeferredTools(
+      selectBuiltinToolsForRun({ ...options, ticketBoardEnabled: true }),
+    ).tools.map((tool) => tool.name);
+    expect(exposed).toEqual(expect.arrayContaining(["find_tools", "use_tool", "task_catalog"]));
+    expect(exposed).not.toEqual(expect.arrayContaining(ticketNames));
+    expect(exposed).not.toContain("schedule_create");
     expect(disabled).toEqual(enabled.filter((name) => !ticketNames.includes(name)));
     expect(
       selectBuiltinToolsForRun({

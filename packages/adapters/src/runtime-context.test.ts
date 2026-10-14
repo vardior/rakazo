@@ -2,7 +2,9 @@ import type { Api, Context, Message, Model } from "@earendil-works/pi-ai";
 import type { AgentRunRequest } from "@rakazo/adapter-kit";
 import { DEFAULT_CONTEXT_STRATEGY } from "@rakazo/adapter-kit";
 import { describe, expect, it } from "vitest";
+import { builtinAgentTools } from "./builtin-tools.js";
 import { ContextBudgetError, ContextCacheTracker } from "./context-selection.js";
+import { splitDeferredTools } from "./deferred-tools.js";
 import { createRuntimeContextPolicy } from "./runtime-context.js";
 
 const model = {
@@ -41,6 +43,29 @@ function fixture(count = 30) {
   return { request, context };
 }
 describe("runtime context policy", () => {
+  it("fits core schemas within the local window that rejects the full built-in context", () => {
+    const { request, context } = fixture(0);
+    const localModel = { ...model, contextWindow: 32_768, maxTokens: 4096 };
+    const declarations = (tools: typeof builtinAgentTools) =>
+      tools.map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.inputSchema,
+      }));
+    request.tools = builtinAgentTools;
+    context.tools = declarations(request.tools);
+    expect(() => createRuntimeContextPolicy(request).prepareContext(context, localModel)).toThrow(
+      ContextBudgetError,
+    );
+    Object.assign(request, splitDeferredTools(builtinAgentTools));
+    context.tools = declarations(request.tools);
+    const serializedTools = JSON.stringify(context.tools);
+    const policy = createRuntimeContextPolicy(request);
+    const prepared = policy.prepareContext(context, localModel);
+    expect(policy.getDecision()!.estimatedInputTokens).toBeLessThan(32_768 - 4096);
+    expect(JSON.stringify(prepared.tools)).toBe(serializedTools);
+    expect(JSON.stringify(policy.prepareContext(context, localModel).tools)).toBe(serializedTools);
+  });
   it("matches the qualified explicit strategy when backend history retrieval is usable", () => {
     const { request, context } = fixture();
     request.tools = ["read_history", "search_history"].map((name) => ({

@@ -36,7 +36,14 @@ import { connectionIdArgument, credentialArgument } from "./bot-secrets.js";
 import { DELEGATION_TOOL_NAMES } from "./builtin-tools.js";
 import { withCloudflareGatewayAuth } from "./cloudflare-ai-gateway.js";
 import { shortenToolResultText } from "./context-selection.js";
+import {
+  canonicalToolJson,
+  findDeferredTools,
+  resolveDeferredToolCall,
+  splitDeferredTools,
+} from "./deferred-tools.js";
 import { DEFAULT_OPENROUTER_MODEL_ID } from "./deployment-model.js";
+import { assertConnectorToolArgs } from "./lazy-tool-catalog.js";
 import { estimateModelContextTokens } from "./model-context.js";
 import { IMAGE_RETURNING_COMPUTER_TOOLS } from "./model-vision.js";
 import {
@@ -260,7 +267,8 @@ export class PiAgentRuntime implements AgentRuntime {
           pendingShells: [],
         };
         resumeHost = host;
-        const tools = toAgentTools(toolDefs, host);
+        const tools = toAgentTools([...toolDefs, ...(request.deferredTools ?? [])], host);
+        const modelTools = tools.filter((tool) => toolDefs.some((def) => def.name === tool.label));
         const seenSteeringIds: string[] = [];
         const initialSteering = request.claimSteering ? await request.claimSteering([]) : [];
         seenSteeringIds.push(...initialSteering.map((item) => item.id));
@@ -391,13 +399,14 @@ export class PiAgentRuntime implements AgentRuntime {
         agent = new Agent({
           sessionId: conversationSessionId(request.threadId, request.botId),
           steeringMode: "all",
-          streamFn: (m, ctx, options) =>
-            hasBackups
-              ? fallbackAwareModelStream(fallbackState, ctx, options)
+          streamFn: (m, ctx, options) => {
+            const modelContext = withModelTools(ctx, modelTools);
+            return hasBackups
+              ? fallbackAwareModelStream(fallbackState, modelContext, options)
               : reliableModelStream(
                   models,
                   m,
-                  ctx,
+                  modelContext,
                   withCloudflareGatewayAuth(request.model, options),
                   request.model.maxTokens,
                   () => selectedModel.credentials?.accessToken ?? apiKey,
@@ -405,7 +414,7 @@ export class PiAgentRuntime implements AgentRuntime {
                     observedPiStream(
                       models,
                       m,
-                      ctx,
+                      modelContext,
                       preparedOptions,
                       (event) => queue.push(event),
                       this.modelCallObserver,
@@ -413,7 +422,8 @@ export class PiAgentRuntime implements AgentRuntime {
                       usageHooks,
                     ),
                   request.model.cacheCapabilities?.retentionMode,
-                ),
+                );
+          },
           getApiKey: hasBackups
             ? async () => activeStreamTarget.credentials?.accessToken ?? activeStreamTarget.apiKey
             : async () => apiKey,
@@ -494,7 +504,7 @@ export class PiAgentRuntime implements AgentRuntime {
             toolActivityShowing = true;
             queue.push({
               type: "progress",
-              text: describeToolActivity(event.toolName, event.args),
+              text: describeToolActivityForCall(host, event.toolName, event.args),
               activity: true,
             });
           }
@@ -813,24 +823,13 @@ export function modelsForRequest(
 function toAgentTools(toolDefs: readonly ConnectorTool[], host: ToolHost): AgentTool[] {
   // Registration order is incidental. Canonicalize before allocating collision suffixes
   // so both provider-visible names and JSON schema serialization stay stable.
-  const canonicalJson = (value: unknown): unknown => {
-    if (Array.isArray(value)) return value.map(canonicalJson);
-    if (value && typeof value === "object") {
-      return Object.fromEntries(
-        Object.entries(value)
-          .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-          .map(([key, item]) => [key, canonicalJson(item)]),
-      );
-    }
-    return value;
-  };
   const ordered = toolDefs
     .map((tool) => ({
       tool: {
         ...tool,
-        inputSchema: canonicalJson(tool.inputSchema) as Record<string, unknown>,
+        inputSchema: canonicalToolJson(tool.inputSchema) as Record<string, unknown>,
       },
-      key: JSON.stringify(canonicalJson(tool)),
+      key: JSON.stringify(canonicalToolJson(tool)),
     }))
     .sort((a, b) =>
       a.tool.name < b.tool.name
@@ -845,7 +844,38 @@ function toAgentTools(toolDefs: readonly ConnectorTool[], host: ToolHost): Agent
     )
     .map(({ tool }) => tool);
   const names = normalizeAgentToolNames(ordered);
-  return ordered.map((tool, index) => toAgentTool(tool, host, names[index]!));
+  const registered = ordered.map((tool, index) => toAgentTool(tool, host, names[index]!));
+  const aliases = registered
+    .filter(
+      (tool) =>
+        tool.name !== tool.label &&
+        host.request.deferredTools?.some((deferred) => deferred.name === tool.label),
+    )
+    .map((tool) => ({ ...tool, name: tool.label }));
+  return [...registered, ...aliases];
+}
+
+function withModelTools(
+  context: TranscriptContext,
+  tools: readonly AgentTool[],
+): TranscriptContext {
+  const names = new Set(tools.map((tool) => tool.name));
+  return {
+    ...context,
+    messages: context.messages.map((message) =>
+      message.role === "system"
+        ? {
+            ...message,
+            ...(message.toolsAdded
+              ? { toolsAdded: message.toolsAdded.filter((tool) => names.has(tool.name)) }
+              : {}),
+            ...(message.toolsRemoved
+              ? { toolsRemoved: message.toolsRemoved.filter((tool) => names.has(tool.name)) }
+              : {}),
+          }
+        : message,
+    ),
+  };
 }
 
 /**
@@ -1050,6 +1080,17 @@ export function prepareRequestSecretArguments(raw: Record<string, unknown>) {
   };
 }
 
+function describeToolActivityForCall(host: ToolHost, name: string, args: unknown): string {
+  if (name === "use_tool" && args && typeof args === "object") {
+    const call = resolveDeferredToolCall(
+      host.request.deferredTools ?? [],
+      args as Record<string, unknown>,
+    );
+    if (!("error" in call)) return describeToolActivity(call.tool.name, call.args);
+  }
+  return describeToolActivity(name, args);
+}
+
 function toAgentTool(tool: ConnectorTool, host: ToolHost, exposedName: string): AgentTool {
   return {
     name: exposedName,
@@ -1162,6 +1203,24 @@ function toAgentTool(tool: ConnectorTool, host: ToolHost, exposedName: string): 
     execute: async (toolCallId, params): Promise<AgentToolResult<unknown>> => {
       host.signal.throwIfAborted();
       const args = (params ?? {}) as Record<string, unknown>;
+      let deferredCallError: { error: string; inputSchema?: Record<string, unknown> } | undefined;
+      if (tool.name === "use_tool" && host.request.deferredTools?.length) {
+        const call = resolveDeferredToolCall(host.request.deferredTools, args);
+        if ("error" in call) {
+          deferredCallError = call;
+        } else {
+          const inner = toAgentTool(call.tool, host, call.tool.name);
+          try {
+            const prepared = inner.prepareArguments?.(call.args) ?? call.args;
+            return inner.execute(toolCallId, prepared);
+          } catch (error) {
+            deferredCallError = {
+              error: error instanceof Error ? error.message : "Invalid tool arguments.",
+              inputSchema: call.tool.inputSchema,
+            };
+          }
+        }
+      }
       const rawCallId =
         toolCallId || `${host.request.runId}:${tool.name}:${host.toolCallSeq.value++}`;
       // Backend idempotency includes the agent namespace; Pi wire IDs remain untouched.
@@ -1178,6 +1237,33 @@ function toAgentTool(tool: ConnectorTool, host: ToolHost, exposedName: string): 
       let failure: unknown;
       try {
         result = await (async () => {
+          if (tool.name === "find_tools" && host.depth > 0) {
+            const found = findDeferredTools(
+              host.request.deferredTools ?? [],
+              String(args.query ?? ""),
+            );
+            return { content: [{ type: "text", text: JSON.stringify(found) }], details: found };
+          }
+          if (deferredCallError) {
+            return {
+              content: [{ type: "text", text: JSON.stringify(deferredCallError) }],
+              details: deferredCallError,
+            };
+          }
+          if (host.request.deferredTools?.some((deferred) => deferred.name === tool.name)) {
+            try {
+              assertConnectorToolArgs(tool.inputSchema, args);
+            } catch (error) {
+              const details = {
+                error: error instanceof Error ? error.message : "Invalid tool arguments.",
+                inputSchema: tool.inputSchema,
+              };
+              return {
+                content: [{ type: "text", text: JSON.stringify(details) }],
+                details,
+              };
+            }
+          }
           if (tool.name === "request_takeover") {
             host.pausePending = true;
             host.queue.push({
@@ -1384,9 +1470,20 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
   }
   const subagentModel = modelForCompletion(selectedModel.model, requestModel.maxTokens);
 
-  const childDefs = host.request.tools.filter((tool) => !DELEGATION_TOOL_NAMES.has(tool.name));
+  const childRequest = {
+    ...host.request,
+    ...splitDeferredTools(
+      [...host.request.tools, ...(host.request.deferredTools ?? [])].filter(
+        (tool) =>
+          !DELEGATION_TOOL_NAMES.has(tool.name) &&
+          tool.name !== "find_tools" &&
+          tool.name !== "use_tool",
+      ),
+    ),
+  };
   const nestedHost: ToolHost = {
     ...host,
+    request: childRequest,
     activeModel: {
       config: requestModel,
       models: selectedModel.models,
@@ -1405,7 +1502,7 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
   };
   const contextPolicy = createRuntimeContextPolicy(
     {
-      ...host.request,
+      ...childRequest,
       model: requestModel,
       history: [],
       prompt: task,
@@ -1413,6 +1510,13 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
     },
     host.context,
     { credentialScope: selectedModel.apiKey, imageTokens: estimatePiImageTokens },
+  );
+  const childTools = toAgentTools(
+    [...childRequest.tools, ...childRequest.deferredTools],
+    nestedHost,
+  );
+  const childModelTools = childTools.filter((tool) =>
+    childRequest.tools.some((def) => def.name === tool.label),
   );
   let nested!: Agent;
   nested = new Agent({
@@ -1431,11 +1535,12 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
       );
     },
     sessionId: conversationSessionId(host.request.threadId, host.request.botId, agentId),
-    streamFn: (m, ctx, options) =>
-      reliableModelStream(
+    streamFn: (m, ctx, options) => {
+      const modelContext = withModelTools(ctx, childModelTools);
+      return reliableModelStream(
         selectedModel.models,
         m,
-        ctx,
+        modelContext,
         withCloudflareGatewayAuth(requestModel, options),
         requestModel.maxTokens,
         () => selectedModel.credentials?.accessToken ?? selectedModel.apiKey,
@@ -1443,7 +1548,7 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
           observedPiStream(
             selectedModel.models,
             m,
-            ctx,
+            modelContext,
             preparedOptions,
             (event) => host.queue.push(event),
             host.modelCallObserver,
@@ -1466,7 +1571,8 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
             },
           ),
         requestModel.cacheCapabilities?.retentionMode,
-      ),
+      );
+    },
     getApiKey: async () =>
       hasBackups
         ? (selectedModel.credentials?.accessToken ?? selectedModel.apiKey)
@@ -1481,13 +1587,16 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
         `You are a Rakazo subagent named "${name}".`,
         "You run inside the parent bot's turn — you are not a separate bot chat.",
         "Complete the task and return a concise result. Do not spawn bots or further subagents.",
+        childRequest.deferredTools.length > 0
+          ? "For tools whose schemas are absent, first use find_tools to read the schema, then use_tool with the exact name and arguments."
+          : undefined,
         extra,
       ]
         .filter(Boolean)
         .join(" "),
       model: subagentModel,
       thinkingLevel: thinkingLevelFor(subagentModel, requestModel.thinkingLevel),
-      tools: toAgentTools(childDefs, nestedHost),
+      tools: childTools,
       messages: [],
     },
   });
@@ -1498,7 +1607,14 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
   nested.subscribe((event) => {
     if (event.type === "tool_execution_start") {
       if (host.toolCallBudget.exceeded) return;
-      const toolName = "toolName" in event && event.toolName ? String(event.toolName) : "a tool";
+      let toolName = "toolName" in event && event.toolName ? String(event.toolName) : "a tool";
+      if (toolName === "use_tool") {
+        const call = resolveDeferredToolCall(
+          childRequest.deferredTools,
+          event.args as Record<string, unknown>,
+        );
+        if (!("error" in call)) toolName = call.tool.name;
+      }
       host.queue.push({
         type: "subagent",
         agentId,

@@ -463,6 +463,7 @@ export interface AgentRunRequest {
   }>;
   currentTurnImages?: AgentInputImage[];
   tools: ConnectorTool[];
+  deferredTools?: ConnectorTool[];
   model: AgentRunModel;
   /** Ordered, user-selected models eligible after provider unavailability. */
   fallbackModels?: Array<Pick<AgentRunModel, "provider" | "id">>;
