@@ -271,7 +271,12 @@ describe("botSecrets router", () => {
   });
 
   it("maps malformed website login values to a bad request without echoing them", async () => {
-    for (const value of [`not-json-${FAKE_VALUE}`, JSON.stringify({ password: FAKE_VALUE })]) {
+    for (const value of [
+      `not-json-${FAKE_VALUE}`,
+      JSON.stringify({ password: FAKE_VALUE }),
+      JSON.stringify({ username: FAKE_VALUE }),
+      JSON.stringify({ extra: { label: "User code", value: FAKE_VALUE } }),
+    ]) {
       const { secrets, call } = botSecretDeps();
       const result = await call("put", {
         botId: "bot-1",

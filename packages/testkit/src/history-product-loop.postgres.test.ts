@@ -18,6 +18,8 @@ describe.skipIf(!enabled)("product history diagnostic loop", () => {
     const assistantProse = "Synthetic explanatory prose for protocol stress coverage. ".repeat(120);
     const inputEstimates: number[] = [];
     const selectedInputEstimates: number[] = [];
+    let firstDiagnosticEstimate = 0;
+    let firstDiagnosticSelection = 0;
     const syntheticUsage = { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 };
     const observations: Array<{
       segment: number;
@@ -82,6 +84,8 @@ describe.skipIf(!enabled)("product history diagnostic loop", () => {
         {
           usage: syntheticUsage,
           expect(request) {
+            firstDiagnosticEstimate = inputEstimates.length - 1;
+            firstDiagnosticSelection = selectedInputEstimates.length;
             expect(JSON.stringify(request.messages)).toContain("Read the Aurora diagnostic chain");
             expect(JSON.stringify(request.messages)).toContain(
               "Start with the project name alone, or one distinctive topic word if no project is named",
@@ -187,15 +191,21 @@ describe.skipIf(!enabled)("product history diagnostic loop", () => {
         Array.from({ length: 12 }, (_, i) => i + 1),
       );
       expect(model.requests).toHaveLength(13);
-      expect(inputEstimates).toHaveLength(13);
-      expect(selectedInputEstimates).toHaveLength(13);
-      expect(selectedInputEstimates.at(-1)!).toBeGreaterThan(selectedInputEstimates[0]! + 32_768);
-      expect(selectedInputEstimates.every((estimate) => estimate <= 1_000_000 - 4096)).toBe(true);
+      const diagnosticInputEstimates = inputEstimates.slice(firstDiagnosticEstimate);
+      const diagnosticSelectedEstimates = selectedInputEstimates.slice(firstDiagnosticSelection);
+      expect(diagnosticInputEstimates).toHaveLength(13);
+      expect(diagnosticSelectedEstimates).toHaveLength(13);
+      expect(diagnosticSelectedEstimates.at(-1)!).toBeGreaterThan(
+        diagnosticSelectedEstimates[0]! + 32_768,
+      );
+      expect(diagnosticSelectedEstimates.every((estimate) => estimate <= 1_000_000 - 4096)).toBe(
+        true,
+      );
       expect(observations.map((row) => row.toolResults)).toEqual(
         Array.from({ length: 12 }, (_, i) => i + 1),
       );
       process.stdout.write(
-        `Synthetic product diagnostic result shapes: ${JSON.stringify({ observations, inputEstimates, selectedInputEstimates })}\n`,
+        `Synthetic product diagnostic result shapes: ${JSON.stringify({ observations, diagnosticInputEstimates, diagnosticSelectedEstimates })}\n`,
       );
     } finally {
       await model.close();

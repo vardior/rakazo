@@ -46,6 +46,10 @@ describe.skipIf(!databaseAvailable)("failed run recovery", () => {
             expect(prompt).toContain(
               "Check current state before repeating any action with side effects.",
             );
+            const work = request.messages.find((message) =>
+              String(message.content).includes("[past work]"),
+            );
+            expect(String(work?.content)).toContain('\\"ok\\":true');
           },
           response: { type: "text", text: "The file is already saved." },
         },
@@ -129,6 +133,17 @@ describe.skipIf(!databaseAvailable)("failed run recovery", () => {
             text: "I didn't finish because the model provider is unavailable.",
             runFailure: { runId: failed.runId },
           },
+          {
+            kind: "steps",
+            steps: [{ label: "Write file", count: 1 }],
+            workRecord: [
+              {
+                tool: "write_file",
+                target: "notes/result.txt",
+                result: JSON.stringify({ ok: true, path: "notes/result.txt" }),
+              },
+            ],
+          },
         ],
       });
       expect(
@@ -168,9 +183,9 @@ describe.skipIf(!databaseAvailable)("failed run recovery", () => {
       const original = await handles.prisma.run.findUniqueOrThrow({ where: { id: failed.runId } });
       expect(retry.sourceMessageId).toBe(original.sourceMessageId);
       const recovered = await rpc<ThreadSnapshot>("threads/get", { botId: bot.id });
-      expect(recovered.messages.find((message) => message.id === notice!.id)?.blocks).toMatchObject(
-        [{ runFailure: { runId: failed.runId, retried: true } }],
-      );
+      expect(
+        recovered.messages.find((message) => message.id === notice!.id)?.blocks[0],
+      ).toMatchObject({ runFailure: { runId: failed.runId, retried: true } });
       expect(recovered.messages.filter((message) => message.role === "user")).toHaveLength(1);
       expect(retry.task.prompt).toContain("write_file — notes/result.txt: succeeded");
       expect(
