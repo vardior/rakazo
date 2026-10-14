@@ -22,7 +22,7 @@ const SecretHeaderName = z
     "Unsupported credential header",
   );
 
-const LoginExtraFieldLabel = z.string().trim().min(1).max(120);
+export const LoginExtraFieldLabel = z.string().trim().min(1).max(120);
 
 export const BotSecretAuth = z.discriminatedUnion("type", [
   z.object({ type: z.literal("bearer") }),

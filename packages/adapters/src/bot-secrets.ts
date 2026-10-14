@@ -1,18 +1,20 @@
 import { randomBytes } from "node:crypto";
 import type { SecretStore } from "@rakazo/adapter-kit";
-import type { BotSecretDestination } from "@rakazo/contracts";
+import type { BotSecretDestination, MessageBlock } from "@rakazo/contracts";
 import {
   BotSecretAuth,
   BotSecretName,
   botSecretDestinationSchema,
   commandVariableName,
   commandVariableProblem,
-  decodeLoginSecret,
   isPrivateNetworkHost,
+  LoginExtraFieldLabel,
+  LoginSecretValue,
   SecretHttpRequest,
 } from "@rakazo/contracts";
 import type { Prisma, PrismaClient } from "@rakazo/db";
-import { withTransactionRetry } from "@rakazo/db";
+import { replaceThreadUserMessageSecret, withTransactionRetry } from "@rakazo/db";
+import { z } from "zod";
 import { combineSignals, redactConnectorPayload } from "./connector-safety.js";
 import type { RemoteTransportDependencies } from "./remote-mcp.js";
 import { createPrivateNetworkFetch, createSafeRemoteFetch } from "./remote-mcp.js";
@@ -20,6 +22,161 @@ import { persistPreparedSecret } from "./secret-persistence.js";
 import { readBodyCapped, withAbort } from "./web-ssrf.js";
 
 export type BotSecretScope = { userId: string; spaceId: string; botId: string };
+export const RequestSecretAuth = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("command") }),
+  z.object({
+    type: z.literal("login"),
+    origin: z.string().url(),
+    field: z.enum(["username", "password", "extra"]),
+    label: LoginExtraFieldLabel.optional(),
+  }),
+]);
+export type RequestSecretAuth = z.infer<typeof RequestSecretAuth>;
+export const SecurePastedSecretInput = z.object({
+  value: z.string().min(1).max(16_384),
+  name: BotSecretName,
+  auth: RequestSecretAuth,
+});
+const StoredLoginSecretValue = LoginSecretValue.partial().refine(
+  (login) => login.username !== undefined || login.password !== undefined,
+);
+
+function loginSecretValues(login: z.infer<typeof StoredLoginSecretValue>): string[] {
+  return [login.username, login.password, login.extra?.value].filter(
+    (value): value is string => value !== undefined,
+  );
+}
+
+export async function securePastedBotSecret(input: {
+  prisma: PrismaClient;
+  secretStore: SecretStore;
+  scope: BotSecretScope;
+  threadId: string;
+  runId: string;
+  args: Record<string, unknown>;
+  registerRedactions: (values: string[]) => void;
+}) {
+  const parsed = SecurePastedSecretInput.safeParse(input.args);
+  if (!parsed.success) return { error: "Invalid pasted credential arguments." };
+  const secret = parsed.data;
+  const recent = await input.prisma.message.findMany({
+    where: { threadId: input.threadId, role: "user" },
+    orderBy: { seq: "desc" },
+    take: 20,
+    select: { blocks: true },
+  });
+  if (
+    !recent.some((message) =>
+      (message.blocks as MessageBlock[]).some(
+        (block) =>
+          "text" in block && typeof block.text === "string" && block.text.includes(secret.value),
+      ),
+    )
+  )
+    return { error: "The value must appear in a recent user message in this chat." };
+  input.registerRedactions(commandCredentialRedactions({ value: secret.value }));
+  try {
+    return await withTransactionRetry(async () => {
+      const { destination, prepared } = await preparePastedBotSecret({ ...input, secret });
+      const replaced = await persistPreparedSecret(input.prisma, input.secretStore, prepared, () =>
+        input.prisma.$transaction(async (tx) => {
+          const count = await replaceThreadUserMessageSecret(tx, {
+            threadId: input.threadId,
+            botId: input.scope.botId,
+            runId: input.runId,
+            value: secret.value,
+            replacement: `[saved as ${secret.name}]`,
+          });
+          if (!count) throw new Error("Pasted credential is no longer in recent user messages");
+          await prepared.store(tx);
+          return count;
+        }),
+      );
+      return { ok: true, ...botSecretToolView(destination), replaced };
+    });
+  } catch {
+    return {
+      error: "Could not secure the pasted credential. Check its name and destination and retry.",
+    };
+  }
+}
+
+async function preparePastedBotSecret(input: {
+  prisma: PrismaClient;
+  secretStore: SecretStore;
+  scope: BotSecretScope;
+  secret: z.infer<typeof SecurePastedSecretInput>;
+}) {
+  const { secret } = input;
+  const existing = await input.prisma.botSecret.findFirst({
+    where: { ...scopeFields(input.scope), name: secret.name },
+  });
+  const requested = normalizeSecretDestination({
+    name: secret.name,
+    origin: secret.auth.type === "login" ? secret.auth.origin : "",
+    auth: { type: secret.auth.type },
+  });
+  const existingLogin =
+    secret.auth.type === "login" &&
+    existing &&
+    sameSecretDestination(normalizeSecretDestination(existing), requested)
+      ? StoredLoginSecretValue.parse(
+          JSON.parse(await input.secretStore.load(existing.ciphertext, existing.id)),
+        )
+      : {};
+  const extraLabel =
+    secret.auth.type === "login"
+      ? secret.auth.field === "extra"
+        ? (secret.auth.label ?? existingLogin.extra?.label)
+        : existingLogin.extra?.label
+      : undefined;
+  if (secret.auth.type === "login" && secret.auth.field === "extra" && !extraLabel)
+    throw new Error("Name the extra sign-in field with auth.label");
+  const destination: BotSecretDestination = extraLabel
+    ? { ...requested, auth: { type: "login", extraFieldLabel: extraLabel } }
+    : requested;
+  if (
+    JSON.stringify(destination) !==
+    JSON.stringify(redactConnectorPayload(destination, [secret.value]))
+  )
+    throw new Error("Credential metadata must not contain the protected value");
+  let plaintext = secret.value;
+  if (secret.auth.type === "login") {
+    plaintext = JSON.stringify(
+      StoredLoginSecretValue.parse(
+        secret.auth.field === "extra"
+          ? { ...existingLogin, extra: { label: extraLabel, value: secret.value } }
+          : { ...existingLogin, [secret.auth.field]: secret.value },
+      ),
+    );
+  }
+  return { destination, prepared: await prepareBotSecret({ ...input, destination, plaintext }) };
+}
+
+export async function loadBotSecretRedactions(
+  prisma: PrismaClient,
+  secretStore: SecretStore,
+  scope: BotSecretScope,
+): Promise<string[]> {
+  const rows = await prisma.botSecret.findMany({
+    where: scopeFields(scope),
+    select: { id: true, ciphertext: true, auth: true },
+    take: 100,
+  });
+  const values: string[] = [];
+  for (const row of rows) {
+    const plaintext = await secretStore.load(row.ciphertext, row.id);
+    const auth = BotSecretAuth.parse(row.auth);
+    values.push(
+      ...(auth.type === "login"
+        ? loginSecretValues(StoredLoginSecretValue.parse(JSON.parse(plaintext)))
+        : [plaintext]),
+    );
+  }
+  return commandCredentialRedactions(
+    Object.fromEntries(values.map((value, index) => [index, value])),
+  );
+}
 function scopeFields({ userId, spaceId, botId }: BotSecretScope): BotSecretScope {
   return { userId, spaceId, botId };
 }
@@ -381,7 +538,7 @@ export async function prepareBotSecret(input: {
   if (!plaintext || plaintext.length > 16_384) throw new Error("Invalid credential length");
   const destination = normalizeSecretDestination(input.destination);
   if (destination.auth.type === "login") {
-    const login = decodeLoginSecret(plaintext);
+    const login = StoredLoginSecretValue.parse(JSON.parse(plaintext));
     if (login.extra?.label !== destination.auth.extraFieldLabel) {
       throw new Error("Login fields do not match the requested credential");
     }
@@ -630,10 +787,17 @@ export async function resolveLoginFill(input: {
   if (destination.origin !== storedOrigin.origin) {
     return { error: "Website logins can only be filled on an HTTPS origin." };
   }
-  const login = decodeLoginSecret(await input.secretStore.load(row.ciphertext, row.id));
+  const login = StoredLoginSecretValue.parse(
+    JSON.parse(await input.secretStore.load(row.ciphertext, row.id)),
+  );
   const text = input.field === "extra" ? login.extra?.value : login[input.field];
   if (text === undefined) {
-    return { error: "This login has no extra field. Use request_secret with replace to add it." };
+    return {
+      error:
+        input.field === "extra"
+          ? "This login has no extra field. Use request_secret with replace to add it."
+          : "This login field has not been saved.",
+    };
   }
   return {
     text,
@@ -641,9 +805,9 @@ export async function resolveLoginFill(input: {
     // Redaction is substring replacement, so a short username would mangle unrelated text.
     redactions: [
       ...new Set(
-        [login.password, encodeURIComponent(login.password)].concat(
+        (login.password ? [login.password, encodeURIComponent(login.password)] : []).concat(
           login.extra ? [login.extra.value, encodeURIComponent(login.extra.value)] : [],
-          login.username.length >= MIN_REDACTED_USERNAME
+          login.username && login.username.length >= MIN_REDACTED_USERNAME
             ? [login.username, encodeURIComponent(login.username)]
             : [],
         ),
