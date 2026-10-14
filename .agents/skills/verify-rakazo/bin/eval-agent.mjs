@@ -180,12 +180,12 @@ const scenarios = [
       send(id, "S4 what was the balance?");
       await settle(state);
       const next = calls(id).slice(mark)[0];
-      const seen = (next?.body?.messages ?? [])
-        .filter(
-          (message) =>
-            message.role !== "user" && !textOf(message.content).startsWith("Fixture saw"),
-        )
-        .some((message) => JSON.stringify(message).includes("4321.09"));
+      const seen = (next?.body?.messages ?? []).some((message) =>
+        textOf(message.content)
+          .replace(/\[\[tool:[^\]]*\]\]/g, "")
+          .replace(/«[^»]*»/g, "")
+          .includes("4321.09"),
+      );
       return { pass: seen, observed: seen ? "next run saw 4321.09" : "next run never saw 4321.09" };
     },
   },
