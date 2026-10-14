@@ -159,7 +159,7 @@ Scenarios S1–S9 are deterministic fixture drives of the real stack. Before = t
 | S1 transient overload is retried and answered | 0/1 | 3/3 |
 | S2 a run that cannot reach the model is not silent | 0/1 | 3/3 |
 | S3 chat reply to a pending takeover keeps the browser and arrives as its own message | 0/1 | 3/3 |
-| S4 a tool fact from one run is available to the next | false pass | pending integration fix |
+| S4 a tool fact from one run is available to the next | false pass | 3/3 |
 | S5 a reply that promises more work is followed by that work | 0/1 | 3/3 |
 | S6 a pasted credential is not re-sent on later turns | 0/1 | 3/3 |
 | S7 consecutive runs share a cacheable prefix | first change mid-history | 3/3, first change at the latest turn |
