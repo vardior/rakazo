@@ -151,23 +151,44 @@ const card = vsCard("grok-bot-alternative");
       <p>
         <RichText text={GROK_OTHER_LEAD} />
       </p>
-      <ul>
+      <ul class="other-cards">
         {
-          GROK_OTHER_ALTERNATIVES.map((item) => (
-            <li>
+          GROK_OTHER_ALTERNATIVES.filter((item) => "image" in item).map((item) => (
+            <li class="other-card">
               <a
+                class="other-card__link"
                 href={item.href}
                 {...(item.href.startsWith("http")
                   ? { target: "_blank", rel: "noreferrer" }
                   : {})}
               >
-                {item.label}
-              </a>{" "}
-              — <RichText text={item.note} />
+                <picture>
+                  <source type="image/avif" srcset={item.image.avif} />
+                  <img
+                    src={item.image.webp}
+                    alt={item.image.alt}
+                    width={item.image.width}
+                    height={item.image.height}
+                    loading="lazy"
+                    decoding="async"
+                  />
+                </picture>
+                <span class="other-card__name">{item.label}</span>
+              </a>
+              <p>
+                <RichText text={item.note} />
+              </p>
             </li>
           ))
         }
       </ul>
+      {
+        GROK_OTHER_ALTERNATIVES.filter((item) => !("image" in item)).map((item) => (
+          <p>
+            <a href={item.href}>{item.label}</a> — <RichText text={item.note} />
+          </p>
+        ))
+      }
 
       <h2 id="faq">FAQ</h2>
       {

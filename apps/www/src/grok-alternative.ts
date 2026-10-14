@@ -174,46 +174,64 @@ export const GROK_SECTIONS = [
 export const GROK_OTHER_LEAD =
   "Hosted assistants and open source agents are both on the [alternatives roundup](/alternatives/). [OpenClaw vs Hermes Agent vs Rakazo](/blog/openclaw-vs-hermes-vs-rakazo/) compares the three you run yourself, and [best open source AI agents in 2026](/blog/best-open-source-ai-agents-2026/) includes libraries as well as apps.";
 
+function altShot(file: string, alt: string) {
+  return {
+    webp: `/graphics/grok/alts/${file}.webp`,
+    avif: `/graphics/grok/alts/${file}.avif`,
+    width: 1280,
+    height: 800,
+    alt,
+  };
+}
+
 export const GROK_OTHER_ALTERNATIVES = [
   {
     href: "/muse-alternative/",
     label: "Meta Muse",
     note: "Meta's hosted agent, introduced September 8, 2026, on a virtual machine Meta operates. You talk to it in the Muse app or WhatsApp.",
+    image: altShot("muse", "Meta Muse homepage"),
   },
   {
     href: "/dots-alternative/",
     label: "OpenAI Dots",
     note: "Always-on agents on eligible ChatGPT plans, announced September 29, 2026. OpenAI says each dot has its own cloud computer.",
+    image: altShot("dots", "OpenAI Dots"),
   },
   {
     href: "/instinct-alternative/",
     label: "Instinct",
     note: "The hosted assistant at instinct.com that you text or call. Spear Street Technology, Inc. operates it.",
+    image: altShot("instinct", "Instinct homepage"),
   },
   {
     href: "/hark-alternative/",
     label: "Hark Pro",
     note: "The hosted personal agent at hark.com, launched October 6, 2026, with a free tier. $20 a month is twice the usage, and $100 a month is ten times the usage.",
+    image: altShot("hark", "Hark Pro"),
   },
   {
     href: "/openclaw-alternative/",
     label: "OpenClaw",
     note: "An MIT-licensed agent you run yourself. The docs add a Gateway and a config file.",
+    image: altShot("openclaw", "OpenClaw homepage"),
   },
   {
     href: "/hermes-alternative/",
     label: "Hermes Agent",
     note: "Nous Research's MIT-licensed agent, with a desktop app and a separate messaging gateway.",
+    image: altShot("hermes", "Hermes Agent homepage"),
   },
   {
     href: "https://www.openmausbot.com/",
     label: "OpenMausBot",
     note: "An Apache-2.0 desktop app for macOS, Windows, and Ubuntu. Its [docs](https://docs.openmausbot.com/docs/providers) say bots can run a signed-in agent CLI, or Mistral from an API key with no CLI, and that application data stays on your machine.",
+    image: altShot("openmausbot", "OpenMausBot homepage"),
   },
   {
     href: "https://www.copilotkit.ai/openmuse",
     label: "OpenMuse",
     note: "CopilotKit's MIT-licensed personal agent, with a chat, a persistent browser, and an optional Linux terminal. The project site says those surfaces run in the alpha.",
+    image: altShot("openmuse", "OpenMuse homepage"),
   },
   {
     href: "/alternatives/",
@@ -343,7 +361,12 @@ ${SELF_HOST_AFTER.join("\n\n")}
 
 ${absoluteMarkdown(GROK_OTHER_LEAD)}
 
-${GROK_OTHER_ALTERNATIVES.map((item) => `- [${item.label}](${absoluteHref(item.href)}) — ${absoluteMarkdown(item.note)}`).join("\n")}
+${GROK_OTHER_ALTERNATIVES.map((item) => {
+    const line = `- [${item.label}](${absoluteHref(item.href)}) — ${absoluteMarkdown(item.note)}`;
+    return "image" in item
+      ? `![${item.image.alt}](${SITE_URL}${item.image.webp})\n\n${line}`
+      : line;
+  }).join("\n\n")}
 
 ## FAQ
 
