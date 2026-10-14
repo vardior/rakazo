@@ -75,6 +75,7 @@ export const DE_MESSAGES: Record<string, string> = {
   "Could not create bot": "Bot konnte nicht erstellt werden",
   "Could not delete space": "Space konnte nicht gelöscht werden",
   "Could not load bots": "Bots konnten nicht geladen werden",
+  "Could not retry": "Erneuter Versuch fehlgeschlagen",
   "Could not save the default space": "Standard-Space konnte nicht gespeichert werden",
   "Could not switch spaces": "Space konnte nicht gewechselt werden",
   Create: "Erstellen",

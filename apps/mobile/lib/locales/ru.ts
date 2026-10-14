@@ -237,6 +237,7 @@ export const RU_MESSAGES: Record<string, string> = {
   "Could not finish sign-in": "Не удалось завершить вход",
   "Could not load bot": "Не удалось загрузить бота",
   "Could not load bots": "Не удалось загрузить ботов",
+  "Could not retry": "Не удалось повторить",
   "Could not load earlier messages": "Не удалось загрузить предыдущие сообщения",
   "Could not load group": "Не удалось загрузить группу",
   "Could not load integrations": "Не удалось загрузить интеграции",
