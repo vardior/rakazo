@@ -31,6 +31,17 @@ export interface ContextSelectionOptions {
   /** Keep tool protocol intact while shortening oversized result bodies. */
   truncateToolResults?: boolean;
 }
+export interface RecentExchangeWindow {
+  start: number;
+  count: number;
+}
+export function recentExchangeWindow(totalExchanges: number, limit: number): RecentExchangeWindow {
+  const total = Math.max(0, Math.floor(totalExchanges));
+  const boundedLimit = Math.max(1, Math.floor(limit));
+  if (total <= boundedLimit) return { start: 0, count: total };
+  const start = Math.floor((total - boundedLimit) / boundedLimit) * boundedLimit;
+  return { start, count: total - start };
+}
 export class ContextBudgetError extends Error {
   constructor(
     public readonly estimatedTokens: number,
@@ -421,7 +432,14 @@ export function selectContext<T extends ContextMessage>(
     (options.strategy === "cache-aware" && options.cacheWarmth === "likely-warm");
   const exchangeLimit = keepPrefix
     ? Number.POSITIVE_INFINITY
-    : Math.max(1, options.recentExchanges ?? 8);
+    : recentExchangeWindow(
+        groups.reduce(
+          (count, group) =>
+            count + Number(group.indexes.some((index) => messages[index]!.role === "user")),
+          0,
+        ),
+        Math.max(1, options.recentExchanges ?? 8),
+      ).count;
   let exchanges = 0;
   // Retain a contiguous recent suffix. Skip no holes inside a retained tool group.
   for (let index = groups.length - 1; index >= 0; index--) {

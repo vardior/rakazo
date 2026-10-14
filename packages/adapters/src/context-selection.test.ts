@@ -4,6 +4,7 @@ import {
   ContextCacheTracker,
   estimateContextTokens,
   providerContextPrefix,
+  recentExchangeWindow,
   selectContext,
 } from "./context-selection.js";
 
@@ -26,6 +27,26 @@ describe("bounded context selection", () => {
       availableTokens: 28672,
     });
     expect(error.message.length).toBeLessThan(300);
+  });
+  it("advances the recent exchange window in batches", () => {
+    const expectedStarts = [
+      ...Array(15).fill(0),
+      ...Array(8).fill(8),
+      ...Array(8).fill(16),
+      ...Array(8).fill(24),
+      32,
+    ];
+    expect(
+      Array.from({ length: 40 }, (_, index) => recentExchangeWindow(index + 1, 8).start),
+    ).toEqual(expectedStarts);
+  });
+  it("keeps adjacent retrieval windows on the same anchored prefix", () => {
+    const history = Array.from({ length: 17 }, (_, index) => user(`exchange ${index}`));
+    const first = selectContext(history.slice(0, 16), { budget, strategy: "retrieval" });
+    const second = selectContext(history, { budget, strategy: "retrieval" });
+    expect(first.messages).toEqual(history.slice(8, 16));
+    expect(second.messages).toEqual(history.slice(8));
+    expect(second.messages.slice(0, first.messages.length)).toEqual(first.messages);
   });
   it("accounts for instructions, tools, images and output reserve", () => {
     expect(estimateContextTokens([{ type: "image", data: "base64" }], 1000)).toBeGreaterThan(1000);

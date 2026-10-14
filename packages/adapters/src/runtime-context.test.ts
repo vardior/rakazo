@@ -2,7 +2,11 @@ import type { Api, Context, Message, Model } from "@earendil-works/pi-ai";
 import type { AgentRunRequest } from "@rakazo/adapter-kit";
 import { DEFAULT_CONTEXT_STRATEGY } from "@rakazo/adapter-kit";
 import { describe, expect, it } from "vitest";
-import { ContextBudgetError, ContextCacheTracker } from "./context-selection.js";
+import {
+  ContextBudgetError,
+  ContextCacheTracker,
+  providerContextPrefix,
+} from "./context-selection.js";
 import { createRuntimeContextPolicy } from "./runtime-context.js";
 
 const model = {
@@ -149,7 +153,7 @@ describe("runtime context policy", () => {
       contextStrategy: "retrieval",
     }).prepareContext(baseline.context, model).messages.length;
     const { request, context } = fixture(32);
-    const replies = new Set(Array.from({ length: 16 }, (_, index) => index * 2 + 1));
+    const replies = new Set(Array.from({ length: 16 }, (_, index) => index * 2));
     request.history = request.history.map((item, index) =>
       replies.has(index) ? { ...item, role: "assistant" } : item,
     );
@@ -190,13 +194,14 @@ describe("runtime context policy", () => {
       "user",
       "assistant",
       "user",
+      "user",
     ]);
     expect(prepared.messages[0]).toMatchObject({
       role: "user",
-      content: `Assistant: ${request.history[25]!.content}`,
-      rakazoMessageId: "message-25",
+      content: `Assistant: ${request.history[24]!.content}`,
+      rakazoMessageId: "message-24",
     });
-    expect(prepared.messages.slice(1)).toEqual(context.messages.slice(26));
+    expect(prepared.messages.slice(1)).toEqual(context.messages.slice(25));
   });
   it("leaves the baseline provider payload untouched", () => {
     const { request, context } = fixture();
@@ -246,6 +251,58 @@ describe("runtime context policy", () => {
     expect(prepared.messages).toContainEqual(context.messages.at(-2));
     expect(prepared.messages).toContainEqual(context.messages.at(-1));
     expect(prepared.messages.length).toBeLessThan(context.messages.length);
+  });
+  it("keeps the serialized retrieval prefix across adjacent anchored windows", () => {
+    const { request } = fixture(0);
+    const requestFor = (historyCount: number): AgentRunRequest => ({
+      ...request,
+      history: Array.from({ length: historyCount }, (_, index) => ({
+        id: `message-${index}`,
+        role: "user" as const,
+        content: `exchange ${index}`,
+      })),
+      tools: ["read_history", "search_history"].map((name) => ({
+        name,
+        description: name,
+        inputSchema: { type: "object" },
+      })),
+      executeTool: async () => ({}),
+    });
+    const contextFor = (historyCount: number, current: string): Context => ({
+      systemPrompt: request.instructions,
+      tools: [],
+      messages: [
+        ...Array.from({ length: historyCount }, (_, index) => ({
+          role: "user" as const,
+          content: `exchange ${index}`,
+          timestamp: index,
+          rakazoHistory: true,
+          rakazoMessageId: `message-${index}`,
+        })),
+        { role: "user", content: current, timestamp: historyCount },
+      ],
+    });
+    const first = createRuntimeContextPolicy(requestFor(16)).prepareContext(
+      contextFor(16, "exchange 16"),
+      model,
+    );
+    const second = createRuntimeContextPolicy(requestFor(17)).prepareContext(
+      contextFor(17, "exchange 17"),
+      model,
+    );
+    const firstMessages = providerContextPrefix(
+      first.systemPrompt ?? "",
+      first.tools ?? [],
+      first.messages,
+    ).messages;
+    const secondMessages = providerContextPrefix(
+      second.systemPrompt ?? "",
+      second.tools ?? [],
+      second.messages,
+    ).messages;
+    expect(firstMessages).toHaveLength(9);
+    expect(secondMessages).toHaveLength(10);
+    expect(secondMessages.slice(0, firstMessages.length)).toEqual(firstMessages);
   });
   it.each(["snapshots", "cache-aware"] as const)(
     "retains already-short history without lookup navigation under %s",
