@@ -131,7 +131,10 @@ const scenarios = [
       send(id, "[[fail:2:overloaded]] S1 ping");
       await settle(state, 120_000);
       const run = sourceRun(state, "S1 ping");
-      return { pass: run.status === "completed", observed: `run ${run.status} ${run.error}`.trim() };
+      return {
+        pass: run.status === "completed",
+        observed: `run ${run.status} ${run.error}`.trim(),
+      };
     },
   },
   {
@@ -163,7 +166,12 @@ const scenarios = [
       send(id, "S4 what was the balance?");
       await settle(state);
       const next = calls(id).slice(mark)[0];
-      const seen = serialize(next?.body).includes("4321.09");
+      const seen = (next?.body?.messages ?? [])
+        .filter(
+          (message) =>
+            message.role !== "user" && !textOf(message.content).startsWith("Fixture saw"),
+        )
+        .some((message) => JSON.stringify(message).includes("4321.09"));
       return { pass: seen, observed: seen ? "next run saw 4321.09" : "next run never saw 4321.09" };
     },
   },
@@ -277,14 +285,23 @@ for (let trial = 1; trial <= trials; trial += 1) {
   }
   writeFileSync(
     path.join(bundle, `trial-${trial}-fixture-log.json`),
-    JSON.stringify(calls(id).map(({ body, ...call }) => call), null, 2),
+    JSON.stringify(
+      calls(id).map(({ body, ...call }) => call),
+      null,
+      2,
+    ),
   );
   if (!values.keep) ctl(id, "down");
 }
 
 const byScenario = new Map();
 for (const result of results) {
-  const entry = byScenario.get(result.id) ?? { title: result.title, passes: 0, runs: 0, observed: [] };
+  const entry = byScenario.get(result.id) ?? {
+    title: result.title,
+    passes: 0,
+    runs: 0,
+    observed: [],
+  };
   entry.runs += 1;
   if (result.pass) entry.passes += 1;
   entry.observed.push(result.observed);
