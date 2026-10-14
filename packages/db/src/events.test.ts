@@ -2415,7 +2415,66 @@ describe("sendUserMessage", () => {
     });
   });
 
-  it("keeps an inbound message pending while the creation intro is active", async () => {
+  it.each([
+    { trigger: "user" as const, busyTrigger: "created" },
+    { trigger: "follow_up" as const, busyTrigger: "routine" },
+  ])(
+    "starts a $trigger message's own run while a $busyTrigger run is busy",
+    async ({ trigger, busyTrigger }) => {
+      const tx = {
+        thread: {
+          update: vi
+            .fn()
+            .mockResolvedValueOnce({ nextMessageSeq: 5 })
+            .mockResolvedValueOnce({ nextEventSeq: 9 }),
+        },
+        message: {
+          create: vi.fn().mockResolvedValue({ id: "message-1", seq: 4 }),
+          update: vi.fn(),
+        },
+        steeringMessage: { create: vi.fn() },
+        task: { create: vi.fn().mockResolvedValue({ id: "task-1" }) },
+        run: {
+          findMany: vi
+            .fn()
+            .mockResolvedValue([
+              { id: "busy-run", taskId: "busy-task", trigger: busyTrigger, status: "running" },
+            ]),
+          findUnique: vi.fn().mockResolvedValue({ status: "queued", startedAt: null }),
+          create: vi.fn().mockResolvedValue({ id: "run-1", taskId: "task-1" }),
+        },
+        event: {
+          create: vi.fn(async ({ data }: { data: { seq: number; type: string } }) => ({
+            ...event(data.seq),
+            type: data.type,
+          })),
+        },
+      };
+      const prisma = {
+        message: { findUnique: vi.fn().mockResolvedValue(null) },
+        $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+      } as unknown as PrismaClient;
+
+      await expect(
+        sendUserMessage(prisma, {
+          spaceId: "workspace-1",
+          threadId: "thread-1",
+          botId: "bot-1",
+          userId: "user-1",
+          blocks: [{ kind: "text", text: "Check the inbox" }],
+          prompt: "Check the inbox",
+          trigger,
+        }),
+      ).resolves.toEqual({ messageId: "message-1", seq: 4, taskId: "task-1", runId: "run-1" });
+
+      expect(tx.run.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ trigger, sourceMessageId: "message-1" }),
+      });
+      expect(tx.steeringMessage.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps a follow-up pending behind a routine run waiting for takeover", async () => {
     const tx = {
       thread: {
         update: vi
@@ -2430,10 +2489,17 @@ describe("sendUserMessage", () => {
       steeringMessage: { create: vi.fn() },
       task: { create: vi.fn() },
       run: {
-        findMany: vi
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: "run-routine",
+            taskId: "task-routine",
+            trigger: "routine",
+            status: "waiting_takeover",
+          },
+        ]),
+        findUnique: vi
           .fn()
-          .mockResolvedValue([{ id: "intro-run", taskId: "intro-task", trigger: "created" }]),
-        findUnique: vi.fn().mockResolvedValue({ status: "running", startedAt: new Date() }),
+          .mockResolvedValue({ status: "waiting_takeover", startedAt: new Date() }),
         create: vi.fn(),
       },
       event: {
@@ -2454,14 +2520,13 @@ describe("sendUserMessage", () => {
         threadId: "thread-1",
         botId: "bot-1",
         userId: "user-1",
-        blocks: [{ kind: "text", text: "Check the inbox" }],
-        prompt: "Check the inbox",
-        trigger: "user",
+        blocks: [{ kind: "text", text: "status?" }],
+        prompt: "status?",
+        trigger: "follow_up",
       }),
-    ).resolves.toEqual({ messageId: "message-1", seq: 4, taskId: null, runId: "intro-run" });
+    ).resolves.toEqual({ messageId: "message-1", seq: 4, taskId: null, runId: "run-routine" });
 
     expect(tx.run.create).not.toHaveBeenCalled();
-    expect(tx.task.create).not.toHaveBeenCalled();
     expect(tx.steeringMessage.create).toHaveBeenCalledWith({
       data: { messageId: "message-1", botId: "bot-1", userId: "user-1", runId: null },
     });

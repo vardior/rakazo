@@ -988,6 +988,68 @@ describeIntegration("run executor lifecycle", () => {
     ).resolves.toMatchObject({ runId: seeded.run.id });
   });
 
+  it("never starts a routine run and the owner's run on the bot at once", async () => {
+    const seeded = await seedRun("owner-priority", "write a file that says owner-first");
+    const routineTask = await handles.prisma.task.create({
+      data: {
+        spaceId: seeded.me.spaceId,
+        botId: seeded.bot.id,
+        threadId: seeded.thread.id,
+        userId: seeded.me.userId,
+        prompt: "write a file that says routine-after",
+        status: "queued",
+      },
+    });
+    const routineRun = await handles.prisma.run.create({
+      data: {
+        spaceId: seeded.me.spaceId,
+        botId: seeded.bot.id,
+        threadId: seeded.thread.id,
+        taskId: routineTask.id,
+        userId: seeded.me.userId,
+        status: "queued",
+        trigger: "routine",
+      },
+    });
+
+    await handles.executor.continueRun(routineRun.id, "routine-worker");
+    expect(
+      await handles.prisma.run.findUniqueOrThrow({ where: { id: routineRun.id } }),
+    ).toMatchObject({ status: "queued", leaseOwner: null });
+    expect(await handles.prisma.attempt.count({ where: { runId: routineRun.id } })).toBe(0);
+
+    const executing = await handles.prisma.run.update({
+      where: { id: routineRun.id },
+      data: {
+        status: "running",
+        leaseOwner: "busy-routine-worker",
+        leaseFence: { increment: 1 },
+        leaseExpiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+    await handles.executor.continueRun(seeded.run.id, "owner-worker");
+    expect(
+      await handles.prisma.run.findUniqueOrThrow({ where: { id: seeded.run.id } }),
+    ).toMatchObject({ status: "queued", leaseOwner: null });
+    expect(await handles.prisma.attempt.count({ where: { runId: seeded.run.id } })).toBe(0);
+
+    await handles.prisma.run.update({
+      where: { id: routineRun.id, leaseFence: executing.leaseFence },
+      data: { status: "queued", leaseOwner: null, leaseExpiresAt: null },
+    });
+    await handles.executor.continueRun(seeded.run.id, "owner-worker");
+    expect(
+      await handles.prisma.run.findUniqueOrThrow({ where: { id: seeded.run.id } }),
+    ).toMatchObject({ status: "completed" });
+    await handles.executor.continueRun(routineRun.id, "routine-worker");
+    await expect
+      .poll(
+        async () =>
+          (await handles.prisma.run.findUniqueOrThrow({ where: { id: routineRun.id } })).status,
+      )
+      .toBe("completed");
+  });
+
   it("applies the same no-parallel-run rule to the targeted group member", async () => {
     const cookie = await signup(
       `executor-group-steering-${stamp}@rakazo.test`,

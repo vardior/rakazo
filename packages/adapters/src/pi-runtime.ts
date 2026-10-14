@@ -385,10 +385,10 @@ export class PiAgentRuntime implements AgentRuntime {
         const hasBackups = Boolean(request.fallbackModels?.length);
         let agent: Agent;
         let claiming: Promise<unknown> = Promise.resolve();
-        const claimNewSteering = () => {
+        const claimNewSteering = (boundary?: { beforeNextTurn?: boolean }) => {
           const claimed = claiming.then(async () => {
             if (!request.claimSteering) return [];
-            const steering = await request.claimSteering([...seenSteeringIds]);
+            const steering = await request.claimSteering([...seenSteeringIds], boundary);
             seenSteeringIds.push(...steering.map((item) => item.id));
             return steering;
           });
@@ -396,8 +396,8 @@ export class PiAgentRuntime implements AgentRuntime {
           return claimed;
         };
         let heldSteering: AgentSteeringMessage[] = [];
-        const takeSteering = async () => {
-          const claimed = await claimNewSteering();
+        const takeSteering = async (boundary?: { beforeNextTurn?: boolean }) => {
+          const claimed = await claimNewSteering(boundary);
           const steering = [...heldSteering, ...claimed];
           heldSteering = [];
           return steering;
@@ -550,7 +550,7 @@ export class PiAgentRuntime implements AgentRuntime {
             );
           },
           prepareNextTurnWithContext: async () => {
-            steerWith(await takeSteering());
+            steerWith(await takeSteering({ beforeNextTurn: true }));
             return undefined;
           },
           initialState: {

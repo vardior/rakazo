@@ -494,7 +494,10 @@ export interface AgentRunRequest {
   /** Called after a tool returns; implementations must not persist raw result contents. */
   onToolCompleted?: (completion: AgentToolCompletion) => Promise<void> | void;
   /** Atomically claim durable user steering at the runtime's next safe turn boundary. */
-  claimSteering?: (seenIds: string[]) => Promise<AgentSteeringMessage[]>;
+  claimSteering?: (
+    seenIds: string[],
+    boundary?: { beforeNextTurn?: boolean },
+  ) => Promise<AgentSteeringMessage[]>;
 }
 
 export interface ScriptedTurn {

@@ -197,7 +197,7 @@ describe.skipIf(!enabled)("steering a running reply", () => {
         await product.send("Book the dentist for Tuesday");
         held.open();
         await product.waitForIdle();
-        expect(await product.runTriggers()).toEqual(["created", "follow_up"]);
+        expect(await product.runTriggers()).toEqual(["created", "user"]);
         expect(await product.botMessages()).toEqual(["Hi, I'm ready.", "Booked for Tuesday."]);
       },
       { keepIntro: true },

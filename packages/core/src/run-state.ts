@@ -13,7 +13,13 @@ const TERMINAL: RunStatus[] = ["completed", "failed", "cancelled"];
  * Routine and webhook runs are not the conversation. The creation intro has no tools;
  * a message that lands during it waits, and the continuation after the intro finishes answers it.
  */
-const NON_CONVERSATIONAL_RUN_TRIGGERS = new Set(["routine", "webhook", "created", "tickets"]);
+export const NON_CONVERSATIONAL_RUN_TRIGGERS = [
+  "routine",
+  "webhook",
+  "created",
+  "tickets",
+] as const;
+const NON_CONVERSATIONAL_RUN_TRIGGER_SET = new Set<string>(NON_CONVERSATIONAL_RUN_TRIGGERS);
 
 /**
  * Background triggers do internal work that must not leak into the chat: the
@@ -59,7 +65,7 @@ export function isTerminal(status: RunStatus): boolean {
 
 /** Whether a run's turn is part of the thread's conversation and may take user steering. */
 export function isConversationalRun(trigger: string | null | undefined): boolean {
-  return !NON_CONVERSATIONAL_RUN_TRIGGERS.has(trigger ?? "");
+  return !NON_CONVERSATIONAL_RUN_TRIGGER_SET.has(trigger ?? "");
 }
 
 export function nextFence(current: number): number {

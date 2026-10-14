@@ -68,10 +68,6 @@ const RUNS_NEEDING_CONTINUE = new Set(["queued", "waiting_takeover"]);
 const STEERABLE_RUN_STATUSES = new Set(["queued", "leased", "running", "waiting_takeover"]);
 /**
  * A routine's, webhook's, or creation intro's turn is its own prompt, not the conversation.
- * A user message that lands while one is busy (not `waiting_input`) is stored as pending
- * steering (no run): that run never claims it, and the continuation started when it finishes
- * answers with the full thread. Starting a second run beside the intro overlaps it on a
- * dedicated computer, where there is no per-bot execution lease, and both can reply.
  * Composer text answers a waiting ask, including a routine or webhook ask, only when no
  * steerable conversational run is active. When one is, the text steers that run and the
  * ask stays on its card.
@@ -777,7 +773,9 @@ export async function sendThreadMessage(
             message: "Answer the pending ask first.",
           });
         }
-        const active = activeRuns.find(steersUserMessage) ?? activeRuns[0];
+        const active =
+          activeRuns.find(steersUserMessage) ??
+          activeRuns.find((run) => run.status === "waiting_takeover");
         if (active) {
           await tx.steeringMessage.create({
             data: {
