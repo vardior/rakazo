@@ -117,10 +117,24 @@ function serialize(body) {
   });
 }
 
-function sharedPrefix(a, b) {
+function messagePrefix(firstBody, secondBody) {
+  const first = firstBody?.messages ?? [];
+  const second = secondBody?.messages ?? [];
+  const tools = JSON.stringify(firstBody?.tools) === JSON.stringify(secondBody?.tools);
   let index = 0;
-  while (index < a.length && index < b.length && a[index] === b[index]) index += 1;
-  return index;
+  while (
+    index < first.length - 1 &&
+    index < second.length &&
+    JSON.stringify(first[index]) === JSON.stringify(second[index])
+  )
+    index += 1;
+  const firstText = JSON.stringify(first);
+  const reused = JSON.stringify(first.slice(0, index)).length;
+  return {
+    tools,
+    ratio: tools && firstText.length ? reused / firstText.length : 0,
+    breakAt: index < first.length - 1 ? `${index}:${first[index]?.role}` : "latest turn",
+  };
 }
 
 const scenarios = [
@@ -218,12 +232,27 @@ const scenarios = [
       const middle = calls(id).length;
       send(id, "S7 second");
       await settle(state);
-      const first = serialize(calls(id)[mark]?.body);
-      const second = serialize(calls(id)[middle]?.body);
-      const ratio = first.length ? sharedPrefix(first, second) / first.length : 0;
+      const prefix = messagePrefix(calls(id)[mark]?.body, calls(id)[middle]?.body);
       return {
-        pass: ratio >= 0.95,
-        observed: `second run reused ${(ratio * 100).toFixed(1)}% of the first run's prompt as a prefix`,
+        pass: prefix.tools && prefix.breakAt === "latest turn",
+        observed: `tools ${prefix.tools ? "unchanged" : "changed"}; ${(prefix.ratio * 100).toFixed(1)}% of earlier messages reused; first change at ${prefix.breakAt}`,
+      };
+    },
+  },
+  {
+    id: "S9",
+    title: "Saving a memory note does not break the next run's cacheable prefix",
+    async run({ id, state }) {
+      const mark = calls(id).length;
+      send(id, '[[tool:remember:{"content":"S9 prefers metric units"}]] S9 note this');
+      await settle(state);
+      const middle = calls(id).length;
+      send(id, "S9 next");
+      await settle(state);
+      const prefix = messagePrefix(calls(id)[mark]?.body, calls(id)[middle]?.body);
+      return {
+        pass: prefix.tools && prefix.breakAt === "latest turn",
+        observed: `tools ${prefix.tools ? "unchanged" : "changed"}; ${(prefix.ratio * 100).toFixed(1)}% of earlier messages reused; first change at ${prefix.breakAt}`,
       };
     },
   },
