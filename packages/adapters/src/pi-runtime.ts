@@ -2923,6 +2923,15 @@ function fallbackAwareModelStream(
               state.isProviderFailure(event.error) &&
               isRetryableProviderUnavailable(event.error)
             ) {
+              const next = await resolveNext(target);
+              if (failIfAborted(target)) return;
+              if (next) {
+                await state.onSwitch(next);
+                if (failIfAborted(target)) return;
+                buffered = [];
+                restart = true;
+                break;
+              }
               firstRetryableError ??= event;
               const delay = MODEL_PROVIDER_RETRY_DELAYS_MS[retries];
               if (delay !== undefined) {
@@ -2930,17 +2939,6 @@ function fallbackAwareModelStream(
                 await abortableDelay(delay, signal);
                 if (failIfAborted(target)) return;
                 buffered = [];
-                restart = true;
-                break;
-              }
-              const next = await resolveNext(target);
-              if (failIfAborted(target)) return;
-              if (next) {
-                await state.onSwitch(next);
-                if (failIfAborted(target)) return;
-                buffered = [];
-                retries = 0;
-                firstRetryableError = undefined;
                 restart = true;
                 break;
               }
