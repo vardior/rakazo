@@ -92,12 +92,15 @@ export async function browserActFromTool(
     return redactConnectorPayload(formatBrowserResult(result), options.redactions?.() ?? []);
   } catch (error) {
     context.signal.throwIfAborted();
-    return {
-      ok: false,
-      uncertain: true,
-      error: error instanceof Error ? error.message : String(error),
-      fallback: "computer_act" as const,
-    };
+    return redactConnectorPayload(
+      {
+        ok: false,
+        uncertain: true,
+        error: error instanceof Error ? error.message : String(error),
+        fallback: "computer_act" as const,
+      },
+      options.redactions?.() ?? [],
+    );
   }
 }
 
@@ -123,8 +126,8 @@ export function parseBrowserActions(value: unknown): BrowserActInput[] {
       const secret = String(action.secret ?? "").trim();
       const field = action.field;
       if (!secret) throw new Error("browser_act fill_secret requires secret");
-      if (field !== "username" && field !== "password") {
-        throw new Error("browser_act fill_secret field must be username or password");
+      if (field !== "username" && field !== "password" && field !== "extra") {
+        throw new Error("browser_act fill_secret field must be username, password, or extra");
       }
       return { kind, ref, secret, field };
     }

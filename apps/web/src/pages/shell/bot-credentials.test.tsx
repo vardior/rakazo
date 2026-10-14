@@ -212,6 +212,35 @@ describe("BotCredentialsSection", () => {
     });
   });
 
+  it("shows and replaces a login's requested extra field without losing it", async () => {
+    const login = {
+      ...rows[3],
+      auth: { type: "login", extraFieldLabel: "User code" },
+    };
+    botSecrets.list.mockResolvedValue([login]);
+    botSecrets.put.mockResolvedValue(login);
+    await render();
+    expect(container.textContent).toContain("User code");
+    expect(container.querySelectorAll("input")).toHaveLength(0);
+    await click("credential-replace-portal");
+    await type("credential-replace-username", "fake-user");
+    await type("credential-replace-value", FAKE_VALUE);
+    expect(byTestId<HTMLButtonElement>("credential-replace-save").disabled).toBe(true);
+    expect(byTestId<HTMLInputElement>("credential-replace-extra").type).toBe("password");
+    await type("credential-replace-extra", "fake-extra-code");
+    await click("credential-replace-save");
+    expect(botSecrets.put).toHaveBeenCalledWith({
+      botId: "bot-1",
+      destination: { name: "portal", origin: "https://portal.example.com", auth: login.auth },
+      value: JSON.stringify({
+        username: "fake-user",
+        password: FAKE_VALUE,
+        extra: { label: "User code", value: "fake-extra-code" },
+      }),
+    });
+    expect(container.innerHTML).not.toContain("fake-extra-code");
+  });
+
   it("replaces a value on the same destination", async () => {
     botSecrets.put.mockResolvedValue(rows[2]);
     await render();

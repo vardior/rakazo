@@ -65,6 +65,7 @@ describe("live page helper saved-login fill", () => {
   const html = `
     <input aria-label="Email" />
     <input aria-label="Password" type="password" />
+    <input aria-label="User code" />
     <input aria-label="Phone" type="tel" />
     <textarea aria-label="Username"></textarea>
     <input aria-label="Query" type="search" />
@@ -79,6 +80,8 @@ describe("live page helper saved-login fill", () => {
     browser.fill(refFor("Email", snap.elements), "fake-user", origin);
     browser.fill(refFor("Password", snap.elements), "fake-password", origin);
     browser.fill(refFor("Phone", snap.elements), "555", origin);
+    browser.fill(refFor("User code", snap.elements), "fake-user-code", origin);
+    expect(fieldValue(domWindow, "User code")).toBe("fake-user-code");
     expect(fieldValue(domWindow, "Email")).toBe("fake-user");
     expect(fieldValue(domWindow, "Phone")).toBe("555");
     for (const name of ["Username", "Query", "Website", "Pin"]) {
@@ -87,6 +90,19 @@ describe("live page helper saved-login fill", () => {
       );
     }
     expect(domWindow.document.body.textContent).not.toContain("leaked");
+    expect(JSON.stringify(browser.snapshot())).not.toContain("fake-user-code");
+  });
+
+  it("refuses to fill an extra field after navigation to another origin", () => {
+    const { domWindow, browser } = installPageHelper("https://other.example.test/signin", html);
+    expect(() =>
+      browser.fill(
+        refFor("User code", browser.snapshot().elements),
+        "fake-user-code",
+        "https://login.example.test",
+      ),
+    ).toThrow(/not on the site/);
+    expect(fieldValue(domWindow, "User code")).toBe("");
   });
 
   it("refuses a private-LAN HTTP origin in the same fill, even when the page matches", () => {

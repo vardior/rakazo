@@ -22,6 +22,8 @@ const SecretHeaderName = z
     "Unsupported credential header",
   );
 
+const LoginExtraFieldLabel = z.string().trim().min(1).max(120);
+
 export const BotSecretAuth = z.discriminatedUnion("type", [
   z.object({ type: z.literal("bearer") }),
   z.object({ type: z.literal("header"), name: SecretHeaderName }),
@@ -35,7 +37,7 @@ export const BotSecretAuth = z.discriminatedUnion("type", [
   }),
   // A website sign-in. The username and password are both protected; the backend only types
   // them into pages on the saved origin and never sends them as HTTP credentials.
-  z.object({ type: z.literal("login") }),
+  z.object({ type: z.literal("login"), extraFieldLabel: LoginExtraFieldLabel.optional() }),
   // A value exported to this bot's shell commands as an environment variable. It has no site.
   z.object({ type: z.literal("command") }),
 ]);
@@ -247,6 +249,7 @@ export type BotSecretDestination = z.infer<typeof BotSecretDestination>;
 export const LoginSecretValue = z.object({
   username: z.string().min(1).max(512),
   password: z.string().min(1).max(4096),
+  extra: z.object({ label: LoginExtraFieldLabel, value: z.string().min(1).max(4096) }).optional(),
 });
 export type LoginSecretValue = z.infer<typeof LoginSecretValue>;
 

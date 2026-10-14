@@ -54,12 +54,13 @@ export function AskCard({
 }: {
   block: AskBlock;
   canAnswer: boolean;
-  onAnswer: (text: string, username?: string) => Promise<void>;
+  onAnswer: (text: string, username?: string, extraValue?: string) => Promise<void>;
 }) {
   const { t } = useLingui();
   const [editing, setEditing] = useState(false);
   const [answer, setAnswer] = useState("");
   const [username, setUsername] = useState("");
+  const [extraValue, setExtraValue] = useState("");
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const submitting = pendingAction !== null;
@@ -67,6 +68,10 @@ export function AskCard({
   const askActions = block.actions;
   const secretInput = isSecretAskBlock(block);
   const loginInput = secretInput && block.credential?.auth.type === "login";
+  const extraFieldLabel =
+    secretInput && block.credential?.auth.type === "login"
+      ? block.credential.auth.extraFieldLabel
+      : undefined;
   const secretLabel = loginInput ? t`Password` : secretFieldLabel(block.purpose);
 
   async function submitAnswer(value: string) {
@@ -74,15 +79,18 @@ export function AskCard({
     if (secretInput ? value.length === 0 : !value.trim()) return;
     const submitUsername = loginInput ? username.trim() : undefined;
     if (loginInput && !submitUsername) return;
+    if (extraFieldLabel && !extraValue) return;
+    const submitExtraValue = extraFieldLabel ? extraValue : undefined;
     const submitValue = secretInput ? value : value.trim();
     setPendingAction(secretInput ? "submit" : submitValue);
     setError(null);
     if (secretInput) {
       setAnswer("");
       setUsername("");
+      setExtraValue("");
     }
     try {
-      await onAnswer(submitValue, submitUsername);
+      await onAnswer(submitValue, submitUsername, submitExtraValue);
     } catch (err) {
       // A secret answer's failure may echo the secret, so never show its message.
       setError(
@@ -181,10 +189,27 @@ export function AskCard({
             onChange={(event) => setAnswer(event.target.value)}
             placeholder={secretLabel}
           />
+          {extraFieldLabel ? (
+            <Input
+              aria-label={extraFieldLabel}
+              type="password"
+              autoComplete="off"
+              spellCheck={false}
+              disabled={submitting}
+              value={extraValue}
+              onChange={(event) => setExtraValue(event.target.value)}
+              placeholder={extraFieldLabel}
+            />
+          ) : null}
           <Button
             type="submit"
             className="self-start"
-            disabled={answer.length === 0 || (loginInput && !username.trim()) || submitting}
+            disabled={
+              answer.length === 0 ||
+              (loginInput && !username.trim()) ||
+              (Boolean(extraFieldLabel) && !extraValue) ||
+              submitting
+            }
           >
             {submitting ? <Trans>Saving…</Trans> : <Trans>Save</Trans>}
           </Button>

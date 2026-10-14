@@ -2,10 +2,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AgentRuntimeEvent } from "@rakazo/adapter-kit";
-import { ScriptedAgentRuntime } from "@rakazo/adapters";
+import { EncryptedSecretStore, ScriptedAgentRuntime } from "@rakazo/adapters";
 import { answerRunInput } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { createApp } from "../../../apps/api/src/app.ts";
+import { listBotSecrets, resolveLoginFill } from "../../adapters/src/bot-secrets.js";
+import { createLogger, createTestSink } from "../../logging/src/index.js";
 import { discardBotIntroFromCreate } from "./discard-bot-intro.js";
 
 const hasDb = process.env.VERIFY_DATABASE === "1" && Boolean(process.env.DATABASE_URL);
@@ -20,6 +22,7 @@ const key = "fake-reusable-api-key";
 describeIntegration("reusable credential lifecycle", () => {
   let handles: Awaited<ReturnType<typeof createApp>>;
   const dataDir = mkdtempSync(path.join(tmpdir(), "rakazo-secret-lifecycle-"));
+  const logs = createTestSink();
   const stamp = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const fetch = vi.fn<typeof globalThis.fetch>(async (_url, init) => {
     const auth = new Headers(init?.headers).get("Authorization");
@@ -32,6 +35,7 @@ describeIntegration("reusable credential lifecycle", () => {
   beforeAll(async () => {
     const { createApp } = await import("../../../apps/api/src/app.ts");
     handles = await createApp({
+      logger: createLogger({ service: "rakazo-test", level: "debug", sinks: [logs] }),
       databaseUrl: process.env.DATABASE_URL!,
       dataDir,
       sandboxProvider: "fake",
@@ -314,6 +318,116 @@ describeIntegration("reusable credential lifecycle", () => {
       }
     },
   );
+
+  it("adds a protected extra field to an existing login through the answer RPC", async () => {
+    const seeded = await seedRun("extra-login", "Save website login");
+    const credential = {
+      name: "site_login",
+      origin: "https://login.example.test",
+      auth: { type: "login" as const },
+    };
+    const store = new EncryptedSecretStore(process.env.ENCRYPTION_KEY!);
+    const oldValue = JSON.stringify({ username: "fake-user", password: "fake-password" });
+    await rpc(seeded.cookie, "botSecrets/put", {
+      botId: seeded.bot.id,
+      destination: credential,
+      value: oldValue,
+    });
+    const requested = { ...credential, auth: { ...credential.auth, extraFieldLabel: "User code" } };
+    const seen: string[] = [];
+    const runtime = vi
+      .spyOn(ScriptedAgentRuntime.prototype, "run")
+      .mockImplementation(async function* (request): AsyncIterable<AgentRuntimeEvent> {
+        seen.push(JSON.stringify({ prompt: request.prompt, history: request.history }));
+        yield {
+          type: "tool",
+          name: "request_secret",
+          args: { label: "Save login", purpose: "password", credential: requested, replace: true },
+          executionId: `${request.runId}:extra`,
+        };
+        yield { type: "done", text: "Done" };
+      });
+    try {
+      await handles.executor.continueRun(seeded.run.id, "test-worker");
+      const message = await handles.prisma.message.findFirstOrThrow({
+        where: { runId: seeded.run.id, role: "bot" },
+        orderBy: { seq: "desc" },
+      });
+      expect(message.blocks).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ credential: requested, input: "secret" }),
+        ]),
+      );
+      const answer = {
+        botId: seeded.bot.id,
+        runId: seeded.run.id,
+        messageId: message.id,
+        username: "fake-user",
+        answer: "fake-password",
+      };
+      await expect(rpc(seeded.cookie, "threads/answer", answer)).rejects.toThrow();
+      expect(
+        await handles.prisma.run.findUniqueOrThrow({ where: { id: seeded.run.id } }),
+      ).toMatchObject({ status: "waiting_input" });
+      await rpc(seeded.cookie, "threads/answer", { ...answer, extraValue: "fake-protected-extra" });
+      await handles.awaitIdle?.();
+      expect(
+        await handles.prisma.run.findUniqueOrThrow({ where: { id: seeded.run.id } }),
+      ).toMatchObject({ status: "completed", error: null });
+      const row = await handles.prisma.botSecret.findFirstOrThrow({
+        where: { botId: seeded.bot.id, name: credential.name },
+      });
+      expect(row.auth).toEqual(requested.auth);
+      expect(row.ciphertext).not.toContain("fake-protected-extra");
+      expect(JSON.parse(await store.load(row.ciphertext, row.id))).toEqual({
+        username: "fake-user",
+        password: "fake-password",
+        extra: { label: "User code", value: "fake-protected-extra" },
+      });
+      expect(
+        await resolveLoginFill({
+          prisma: handles.prisma,
+          secretStore: store,
+          scope: { userId: seeded.me.userId, spaceId: seeded.me.spaceId, botId: seeded.bot.id },
+          name: credential.name,
+          field: "extra",
+        }),
+      ).toMatchObject({ text: "fake-protected-extra", origin: credential.origin });
+      const metadata = await rpc(seeded.cookie, "botSecrets/list", { botId: seeded.bot.id });
+      expect(metadata).toEqual(
+        expect.arrayContaining([expect.objectContaining({ auth: requested.auth })]),
+      );
+      const listed = await listBotSecrets(handles.prisma, {
+        userId: seeded.me.userId,
+        spaceId: seeded.me.spaceId,
+        botId: seeded.bot.id,
+      });
+      expect(listed).toEqual(
+        expect.arrayContaining([expect.objectContaining({ auth: requested.auth })]),
+      );
+      const [messages, events, effects, tasks] = await Promise.all([
+        handles.prisma.message.findMany({ where: { threadId: seeded.thread.id } }),
+        handles.prisma.event.findMany({ where: { threadId: seeded.thread.id } }),
+        handles.prisma.externalEffect.findMany({ where: { runId: seeded.run.id } }),
+        handles.prisma.task.findMany({ where: { botId: seeded.bot.id } }),
+      ]);
+      const recorded = JSON.stringify({
+        metadata,
+        listed,
+        seen,
+        messages,
+        events,
+        effects,
+        tasks,
+        logs: logs.events,
+      });
+      expect(logs.events.length).toBeGreaterThan(0);
+      expect(recorded).not.toContain("fake-protected-extra");
+      expect(recorded).not.toContain("fake-password");
+    } finally {
+      runtime.mockRestore();
+    }
+  });
 
   async function seedRun(
     label: string,

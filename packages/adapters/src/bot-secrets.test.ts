@@ -1,10 +1,11 @@
-import type { BotSecretDestination } from "@rakazo/contracts";
+import type { BotSecretDestination, LoginSecretValue } from "@rakazo/contracts";
 import { encodeLoginSecret } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   credentialArgument,
   normalizeSecretDestination,
+  prepareBotSecret,
   requestWithBotSecret,
   resolveLoginFill,
   resolveRequestSecretDestination,
@@ -357,6 +358,23 @@ describe("resolveRequestSecretDestination", () => {
     ).toEqual({ destination: login });
   });
 
+  it("keeps only the label for an extra login field", () => {
+    const credential = {
+      name: "site_login",
+      origin: "https://login.example.test",
+      auth: { type: "login", extraFieldLabel: "User code" },
+    };
+    const result = resolveRequestSecretDestination({
+      credential: {
+        ...credential,
+        extra: { label: "User code", value: plantedSecret },
+        auth: { ...credential.auth, extraValue: plantedSecret },
+      },
+    });
+    expect(result).toEqual({ destination: credential });
+    expect(JSON.stringify(result)).not.toContain(plantedSecret);
+  });
+
   it("keeps the connector path when only connectionId is supplied", () => {
     expect(
       resolveRequestSecretDestination({
@@ -707,8 +725,13 @@ describe("saved website logins", () => {
     origin: "https://login.example.test",
     auth: { type: "login" },
   };
-  async function loginFixture(username: string, auth: object = login.auth, origin = login.origin) {
-    const plaintext = encodeLoginSecret({ username, password: "fake-password-1" });
+  async function loginFixture(
+    username: string,
+    auth: object = login.auth,
+    origin = login.origin,
+    extra?: LoginSecretValue["extra"],
+  ) {
+    const plaintext = encodeLoginSecret({ username, password: "fake-password-1", extra });
     const encrypted = await secretStore.put(
       plaintext,
       { ...scope, operationId: "test", traceId: "test", signal: new AbortController().signal },
@@ -734,6 +757,54 @@ describe("saved website logins", () => {
     expect(await resolveLoginFill({ ...input, field: "username" })).toMatchObject({
       text: "fake-user@example.test",
     });
+  });
+
+  it("resolves the extra field and registers it even when filling another field", async () => {
+    const extra = { label: "User code", value: "fake+code/value" };
+    const { prisma } = await loginFixture(
+      "ada",
+      { type: "login", extraFieldLabel: extra.label },
+      login.origin,
+      extra,
+    );
+    const input = { prisma, secretStore, scope, name: "site_login" };
+    expect(await resolveLoginFill({ ...input, field: "extra" })).toEqual({
+      text: extra.value,
+      origin: login.origin,
+      redactions: expect.arrayContaining([extra.value, encodeURIComponent(extra.value)]),
+    });
+    expect(await resolveLoginFill({ ...input, field: "password" })).toMatchObject({
+      redactions: expect.arrayContaining([extra.value, encodeURIComponent(extra.value)]),
+    });
+  });
+
+  it("reports a missing extra field without exposing the login", async () => {
+    const { prisma } = await loginFixture("ada");
+    expect(
+      await resolveLoginFill({ prisma, secretStore, scope, name: "site_login", field: "extra" }),
+    ).toEqual({
+      error: "This login has no extra field. Use request_secret with replace to add it.",
+    });
+  });
+
+  it("rejects extra fields that disagree with the saved destination metadata", async () => {
+    const { prisma } = await loginFixture("ada");
+    const value = {
+      username: "ada",
+      password: "fake-password",
+      extra: { label: "User code", value: "fake-extra-code" },
+    };
+    for (const extraFieldLabel of [undefined, "Another field"]) {
+      await expect(
+        prepareBotSecret({
+          prisma,
+          secretStore,
+          scope,
+          destination: { ...login, auth: { type: "login", extraFieldLabel } },
+          plaintext: encodeLoginSecret(value),
+        }),
+      ).rejects.toThrow("Login fields do not match the requested credential");
+    }
   });
 
   it("does not redact a short username that would mangle unrelated text", async () => {

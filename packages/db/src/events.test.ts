@@ -1817,7 +1817,15 @@ describe("answerRunInput", () => {
   it.each([
     undefined,
     { name: "example_api", origin: "https://api.example.test", auth: { type: "bearer" } },
+    { name: "site_login", origin: "https://login.example.test", auth: { type: "login" } },
+    {
+      name: "site_login",
+      origin: "https://login.example.test",
+      auth: { type: "login", extraFieldLabel: "User code" },
+    },
   ])("stores secret asks without writing plaintext to the task prompt (%j)", async (credential) => {
+    const login = credential?.auth.type === "login";
+    const extra = login && "extraFieldLabel" in credential.auth;
     const fanout = new TestFanout();
     const store = vi.fn().mockResolvedValue(undefined);
     const tx = {
@@ -1867,6 +1875,8 @@ describe("answerRunInput", () => {
           messageId: "message-1",
           answeredByUserId: "user-1",
           answer: "123456",
+          ...(login ? { username: "fake-user" } : {}),
+          ...(extra ? { extraValue: "fake-extra-code" } : {}),
         },
         fanout,
         { store },
@@ -1876,7 +1886,13 @@ describe("answerRunInput", () => {
     expect(store).toHaveBeenCalledWith(
       expect.objectContaining({
         runId: "run-1",
-        plaintext: "123456",
+        plaintext: login
+          ? JSON.stringify({
+              username: "fake-user",
+              password: "123456",
+              ...(extra ? { extra: { label: "User code", value: "fake-extra-code" } } : {}),
+            })
+          : "123456",
         botId: "bot-1",
         userId: "user-1",
         spaceId: "workspace-1",
@@ -1885,6 +1901,13 @@ describe("answerRunInput", () => {
     );
     expect(tx.task.updateMany).not.toHaveBeenCalled();
     expect(JSON.stringify(tx.event.create.mock.calls)).not.toContain("123456");
+    expect(
+      JSON.stringify({
+        events: tx.event.create.mock.calls,
+        effects: tx.externalEffect.updateMany.mock.calls,
+        messages: tx.message.update.mock.calls,
+      }),
+    ).not.toContain("fake-extra-code");
     expect(tx.externalEffect.updateMany).toHaveBeenCalledWith({
       where: {
         runId: "run-1",
@@ -2008,7 +2031,7 @@ describe("answerRunInput", () => {
       const prisma = {
         $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
       } as unknown as PrismaClient;
-      const answer = (username?: string, password = "fake-password-1") =>
+      const answer = (username?: string, password = "fake-password-1", extraValue?: string) =>
         answerRunInput(
           prisma,
           {
@@ -2019,6 +2042,7 @@ describe("answerRunInput", () => {
             answeredByUserId: "user-1",
             answer: password,
             ...(username !== undefined ? { username } : {}),
+            ...(extraValue !== undefined ? { extraValue } : {}),
           },
           new TestFanout(),
           { store },
@@ -2041,6 +2065,26 @@ describe("answerRunInput", () => {
       const recorded = JSON.stringify([tx.event.create.mock.calls, tx.message.update.mock.calls]);
       expect(recorded).not.toContain("fake-user@example.test");
       expect(recorded).not.toContain("fake-password-1");
+    });
+
+    it.each([undefined, "", "x".repeat(4097)])(
+      "rejects an incomplete extra field before storing",
+      async (extraValue) => {
+        const { store, tx, answer } = loginFixture({
+          ...login,
+          auth: { type: "login", extraFieldLabel: "User code" },
+        });
+        await expect(answer("fake-user", "fake-password", extraValue)).resolves.toBe(false);
+        expect(store).not.toHaveBeenCalled();
+        expect(tx.run.updateMany).not.toHaveBeenCalled();
+      },
+    );
+
+    it("rejects an unsolicited extra value on a two-field login", async () => {
+      const { store, tx, answer } = loginFixture();
+      await expect(answer("fake-user", "fake-password", "fake-extra-value")).resolves.toBe(false);
+      expect(store).not.toHaveBeenCalled();
+      expect(tx.run.updateMany).not.toHaveBeenCalled();
     });
 
     it.each(["", "   "])("requires a username (%j)", async (username) => {

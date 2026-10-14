@@ -407,6 +407,7 @@ export const appContract = {
           clientNonce: z.string().min(1).max(200).optional(),
           /** Only for a login card; `answer` carries its password. */
           username: z.string().min(1).max(512).optional(),
+          extraValue: z.string().min(1).max(4096).optional(),
         }),
       )
       .output(z.object({ ok: z.literal(true) })),
