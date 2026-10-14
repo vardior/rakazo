@@ -309,6 +309,44 @@ const scenarios = [
     },
   },
   {
+    id: "S11",
+    title: "An owner message sent during a routine is answered before the routine finishes",
+    async run({ id, state }) {
+      send(
+        id,
+        '[[tool:schedule_create:{"name":"S11 watch","prompt":"S11 routine [[slow-tool:12]]","delaySeconds":5}]] S11 set up the watch',
+      );
+      await settle(state);
+      let routineRun = "";
+      await waitFor(() => {
+        routineRun = psql(
+          state,
+          `select id from runs where trigger='routine' and status in ('leased','running') order by "createdAt" desc limit 1`,
+        );
+        return Boolean(routineRun);
+      }, 60_000);
+      if (!routineRun) return { pass: false, observed: "routine never started" };
+      await sleep(3000);
+      send(id, "S11 owner question");
+      await settle(state, 120_000);
+      const [ownerAt, routineAt] = ["user", "routine"].map((trigger) =>
+        psql(
+          state,
+          `select extract(epoch from m."createdAt") from messages m join runs r on r.id = m."runId" where m.role = 'bot' and r.trigger = '${trigger}' order by m."createdAt" desc limit 1`,
+        ),
+      );
+      const routine = psql(
+        state,
+        `select r.status || ' ' || coalesce((select string_agg(a.status, ',' order by a."createdAt") from attempts a where a."runId" = r.id), '') from runs r where r.id = '${routineRun}'`,
+      );
+      const ownerFirst = Boolean(ownerAt && routineAt) && Number(ownerAt) < Number(routineAt);
+      return {
+        pass: ownerFirst && routine.startsWith("completed") && routine.includes("yielded"),
+        observed: `owner reply ${ownerFirst ? "before" : "not before"} routine reply; routine ${routine}`,
+      };
+    },
+  },
+  {
     id: "S8",
     title: "The tool list stays identical across every call in the trial",
     async run({ id }) {
