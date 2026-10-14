@@ -50,6 +50,73 @@ function latestToolResult(request: ModelEmulatorRequest) {
 }
 
 describe("real Pi against an offline model HTTP endpoint", () => {
+  it("preserves serialized page and screenshot prefixes between pruning batches", async () => {
+    let previous: ModelEmulatorRequest["messages"] = [];
+    const model = await startModelEmulator({
+      steps: Array.from({ length: 18 }, (_, count) => ({
+        expect(request) {
+          if (count > 0 && ![7, 10, 12, 17].includes(count)) {
+            expect(JSON.stringify(request.messages.slice(0, previous.length))).toBe(
+              JSON.stringify(previous),
+            );
+          }
+          if (count === 10 || count === 17) {
+            expect(
+              request.messages.filter(
+                (message) =>
+                  message.role === "tool" && String(message.content).includes("Page state"),
+              ),
+            ).toHaveLength(3);
+          }
+          previous = request.messages;
+        },
+        response:
+          count < 17
+            ? {
+                type: "tool" as const,
+                id: `snapshot-${count + 1}`,
+                name: "browser_snapshot",
+                arguments: {},
+              }
+            : { type: "text" as const, text: "Inspected." },
+      })),
+    });
+    cleanups.push(() => model.close());
+    let snapshot = 0;
+    await collect(
+      new PiAgentRuntime().run(
+        runRequest(
+          { ...model.model, acceptsImages: true, contextWindow: 1_000_000, maxTokens: 4096 },
+          {
+            prompt: "Inspect the pages.",
+            contextStrategy: "current",
+            tools: [
+              {
+                name: "browser_snapshot",
+                description: "Inspect the page",
+                inputSchema: { type: "object", properties: {} },
+                readOnly: true,
+              },
+            ],
+            executeTool: async () => ({
+              kind: "agent_tool_result",
+              content: [
+                { type: "text", text: `Page state ${++snapshot}: ${"x".repeat(1_200)}` },
+                { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" },
+              ],
+              details: { frameId: `frame-${snapshot}` },
+            }),
+          },
+        ),
+      ),
+    ).catch((error) => {
+      model.assertComplete();
+      throw error;
+    });
+    model.assertComplete();
+    expect(model.requests).toHaveLength(18);
+  });
+
   it.each([undefined, "retrieval", "snapshots", "cache-aware"] as const)(
     "bounds actual initial and tool-loop requests with %s context",
     async (contextStrategy) => {

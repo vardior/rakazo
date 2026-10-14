@@ -5,9 +5,8 @@ export const TAKEOVER_RESUME_CHECKPOINTS: readonly TakeoverResumeCheckpoint[] = 
   "takeover-skipped",
 ];
 
-/** Shown when desktop tools are gated because the user still holds the screen. */
 export const DESKTOP_HELD_FOR_TAKEOVER_MESSAGE =
-  "The user has the screen. File and shell tools still work.";
+  "The user has the screen; wait for them or ask in chat. File and shell tools still work.";
 
 export function takeoverCheckpointOf(
   checkpoint: string | null | undefined,
