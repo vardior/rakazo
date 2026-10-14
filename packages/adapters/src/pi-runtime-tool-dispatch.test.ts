@@ -486,7 +486,7 @@ describe("Pi connector tool dispatch", () => {
     }
 
     expect(claimSteering).toHaveBeenNthCalledWith(1, []);
-    expect(claimSteering).toHaveBeenNthCalledWith(2, []);
+    expect(claimSteering).toHaveBeenNthCalledWith(2, [], { beforeNextTurn: true });
     expect(fakeAgentState.preparedMessages).toEqual([
       expect.objectContaining({
         role: "user",
@@ -541,8 +541,8 @@ describe("Pi connector tool dispatch", () => {
     }
 
     expect(claimSteering).toHaveBeenNthCalledWith(1, []);
-    expect(claimSteering).toHaveBeenNthCalledWith(2, []);
-    expect(claimSteering).toHaveBeenNthCalledWith(3, ["steering-1"]);
+    expect(claimSteering).toHaveBeenNthCalledWith(2, [], { beforeNextTurn: true });
+    expect(claimSteering).toHaveBeenNthCalledWith(3, ["steering-1"], { beforeNextTurn: true });
     expect(fakeAgentState.preparedMessages).toEqual([
       expect.objectContaining({ content: "First boundary context." }),
       expect.objectContaining({ content: "Next boundary context." }),

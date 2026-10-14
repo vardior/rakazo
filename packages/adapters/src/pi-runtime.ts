@@ -440,7 +440,9 @@ export class PiAgentRuntime implements AgentRuntime {
           },
           prepareNextTurnWithContext: async () => {
             if (!request.claimSteering) return undefined;
-            const steering = await request.claimSteering([...seenSteeringIds]);
+            const steering = await request.claimSteering([...seenSteeringIds], {
+              beforeNextTurn: true,
+            });
             if (steering.length === 0) return undefined;
             seenSteeringIds.push(...steering.map((item) => item.id));
             for (const item of steering) {

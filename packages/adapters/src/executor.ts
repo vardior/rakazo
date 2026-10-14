@@ -6631,8 +6631,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 ),
               claimSteering: scripted
                 ? undefined
-                : async (seenIds) => {
+                : async (seenIds, boundary) => {
                     if (
+                      boundary?.beforeNextTurn &&
                       !resumeHeldLease &&
                       !isConversationalRun(run.trigger) &&
                       (await conversationIsWaiting(deps.prisma, run))
