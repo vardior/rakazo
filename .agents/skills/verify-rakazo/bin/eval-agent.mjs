@@ -285,6 +285,30 @@ const scenarios = [
     },
   },
   {
+    id: "S10",
+    title: "A rarely used tool stays reachable while its schema is left out of every call",
+    async run({ id, state }) {
+      const mark = calls(id).length;
+      send(id, '[[tool:use_tool:{"name":"schedule_list","args":{}}]] S10 list my routines');
+      await settle(state);
+      const after = calls(id).slice(mark);
+      const names = after[0]?.tools ?? [];
+      const schemaChars = JSON.stringify(after[0]?.body?.tools ?? []).length;
+      const result = (after[1]?.body?.messages ?? []).findLast((message) => message.role === "tool");
+      const resultText = textOf(result?.content) || JSON.stringify(result?.content ?? "");
+      const deferred =
+        names.includes("find_tools") &&
+        names.includes("use_tool") &&
+        !names.includes("schedule_create") &&
+        !names.includes("schedule_list");
+      const ran = Boolean(result) && !/"error"/.test(resultText);
+      return {
+        pass: deferred && ran,
+        observed: `${names.length} tools, ${schemaChars} schema chars; schedule tools ${deferred ? "deferred" : "sent"}; use_tool ${ran ? "ran schedule_list" : `failed: ${resultText.slice(0, 120)}`}`,
+      };
+    },
+  },
+  {
     id: "S8",
     title: "The tool list stays identical across every call in the trial",
     async run({ id }) {
