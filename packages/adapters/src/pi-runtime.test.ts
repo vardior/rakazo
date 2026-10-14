@@ -1,5 +1,64 @@
 import { describe, expect, it } from "vitest";
-import { describeToolActivity } from "./pi-runtime.js";
+import { commitsToUnfinishedWork, describeToolActivity } from "./pi-runtime.js";
+
+describe("commitsToUnfinishedWork", () => {
+  it.each([
+    "I'm continuing with the analysis now and will report back shortly.",
+    "I'm back on it now… The older-history retrieval and monthly income/outflow calculation aren't finished yet",
+    "I'm continuing with the transaction history and will exclude investment transfers",
+    "I'm collecting the available account data",
+    "I'll report back with the monthly totals.",
+    "I'll get back to you with the results shortly.",
+    "I'm now retrieving the older transactions.",
+    "I'm working on it.",
+    "Working on it now.",
+    "I’m still working on the income and outflow calculation.",
+    "I am continuing the investigation.",
+    "I will continue with the remaining files.",
+    "I'll keep working on the analysis.",
+    "I'll calculate the monthly totals next.",
+    "I'm currently reviewing the available statements.",
+    "The first page is loaded. I'll retrieve the older history next.",
+    "I have the statements.\nI'm gathering the missing transactions now.",
+    "I'LL REPORT BACK SHORTLY.",
+  ])("detects an English-only unfinished-work commitment: %s", (text) => {
+    expect(commitsToUnfinishedWork(text)).toBe(true);
+  });
+
+  it.each([
+    "Your monthly income is 4,200 and your outflow is 3,100, excluding investment transfers.",
+    "I've retrieved the full transaction history and finished the calculation.",
+    "I finished the analysis. Here are the results.",
+    "I continued the analysis and found two duplicate transactions.",
+    "I reported back with the totals in the previous message.",
+    "Which month should I analyze?",
+    "I'm continuing with the analysis. Which accounts should I include?",
+    "I'll wait for your answer.",
+    "I'm waiting for your confirmation before continuing.",
+    "Once you sign in I'll retrieve the older history.",
+    "I'll continue once you sign in.",
+    "After you upload the statements, I'll calculate the totals.",
+    "I'll report back when you provide the missing account data.",
+    "If you approve, I'll continue the analysis.",
+    "I'll continue after your confirmation.",
+    "I'll retrieve the history, but I need you to sign in first.",
+    "I'll report back, but I need your answer before proceeding.",
+    "I'll continue, but approval is pending and I'm awaiting permission.",
+    "I can't access the account. I'll report back after authentication.",
+    "I'm not continuing until the account is connected.",
+    "The bank is working on it.",
+    "You can continue with the transaction history.",
+    'The earlier reply was "I\'m continuing with the analysis now."',
+    '"I\'m continuing with the analysis now."',
+    "`I'll report back shortly.` is the example string.",
+    "```text\nI'm continuing with the analysis now.\n```",
+    "> I'll report back shortly.\nThat was the earlier reply.",
+    "",
+    "Je continue l'analyse et je reviendrai avec les résultats.",
+  ])("leaves completed, quoted, non-English or user-blocked replies alone: %s", (text) => {
+    expect(commitsToUnfinishedWork(text)).toBe(false);
+  });
+});
 
 describe("describeToolActivity", () => {
   it("summarizes builtin tools with their most informative argument", () => {

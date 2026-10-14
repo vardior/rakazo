@@ -11,6 +11,7 @@ import { type ModelEmulatorRequest, startModelEmulator } from "./model-emulator.
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
   await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
+  vi.unstubAllEnvs();
 });
 
 const writeTool: ConnectorTool = {
@@ -174,6 +175,232 @@ describe("real Pi against an offline model HTTP endpoint", () => {
     });
     model.assertComplete();
     expect(model.requests).toHaveLength(18);
+  });
+
+  it.each([
+    "The monthly analysis is complete: income is 4,200 and outflow is 3,100.",
+    "I'll report back with the totals shortly.",
+    "I cannot retrieve the older history because the account connection has expired.",
+  ])("keeps the streamed promise and appends one new assistant turn: %s", async (reply) => {
+    const promise = "I'm continuing with the analysis now and will report back shortly.";
+    const instruction =
+      "You said you would continue. Do that work now with your tools, or tell the user plainly what is blocking you.";
+    const events: AgentRuntimeEvent[] = [];
+    const server = await startModelEmulator({
+      steps: [
+        { expect() {}, response: { type: "text", text: promise } },
+        {
+          expect(request) {
+            expect(events.filter((event) => event.type === "text")).toEqual([
+              { type: "text", text: promise },
+            ]);
+            expect(request.messages.filter((message) => message.role === "assistant")).toEqual([
+              expect.objectContaining({ content: promise }),
+            ]);
+            expect(request.messages.at(-1)).toMatchObject({
+              role: "user",
+              content: instruction,
+            });
+          },
+          response: { type: "text", text: reply },
+        },
+      ],
+    });
+    cleanups.push(() => server.close());
+    await collect(
+      new PiAgentRuntime().run(runRequest(server.model, { prompt: "Analyze the monthly totals." })),
+      events,
+    ).catch((error) => {
+      server.assertComplete();
+      throw error;
+    });
+    server.assertComplete();
+    expect(server.requests).toHaveLength(2);
+    expect(events.filter((event) => event.type === "text")).toEqual([
+      { type: "text", text: promise },
+      { type: "text", text: reply },
+    ]);
+    expect(events.at(-1)).toEqual({ type: "done", text: promise + reply });
+  });
+
+  it("executes tools in the follow-up without renewing the allowance for a second promise", async () => {
+    const promise = "I'm continuing with the analysis now.";
+    const secondPromise = "I'll report back with the totals shortly.";
+    const server = await startModelEmulator({
+      steps: [
+        { expect() {}, response: { type: "text", text: promise } },
+        {
+          expect(request) {
+            expect(request.messages.at(-1)?.content).toContain("Do that work now with your tools");
+          },
+          response: {
+            type: "tool",
+            id: "follow-up-work",
+            name: "write_file",
+            arguments: { path: "notes.txt", content: "monthly totals" },
+          },
+        },
+        {
+          expect(request) {
+            expect(latestToolResult(request)).toMatchObject({
+              tool_call_id: "follow-up-work",
+              content: JSON.stringify({ saved: true }),
+            });
+          },
+          response: { type: "text", text: secondPromise },
+        },
+      ],
+    });
+    cleanups.push(() => server.close());
+    const executeTool = vi.fn(async () => ({ saved: true }));
+    const events = await collect(
+      new PiAgentRuntime().run(runRequest(server.model, { executeTool })),
+    ).catch((error) => {
+      server.assertComplete();
+      throw error;
+    });
+    server.assertComplete();
+    expect(executeTool).toHaveBeenCalledExactlyOnceWith(
+      "write_file",
+      { path: "notes.txt", content: "monthly totals" },
+      JSON.stringify(["pi-tool", "main", "follow-up-work"]),
+      undefined,
+      expect.any(Object),
+    );
+    expect(server.requests).toHaveLength(3);
+    expect(events.at(-1)).toEqual({ type: "done", text: promise + secondPromise });
+  });
+
+  it.each([
+    { reply: "The monthly analysis is complete.", allowSilentEmpty: false },
+    { reply: "I'll wait for your answer.", allowSilentEmpty: false },
+    { reply: "", allowSilentEmpty: true },
+  ])(
+    "does not follow up a completed, user-blocked or silent routine reply: $reply",
+    async ({ reply, allowSilentEmpty }) => {
+      const server = await startModelEmulator({
+        steps: [{ expect() {}, response: { type: "text", text: reply } }],
+      });
+      cleanups.push(() => server.close());
+      const events = await collect(
+        new PiAgentRuntime().run(runRequest(server.model, { allowSilentEmpty })),
+      );
+      server.assertComplete();
+      expect(server.requests).toHaveLength(1);
+      expect(events.at(-1)).toEqual(reply ? { type: "done", text: reply } : { type: "done" });
+    },
+  );
+
+  it.each([
+    { name: "ask_user", args: { question: "Which account?", options: ["Checking", "Savings"] } },
+    { name: "request_takeover", args: { reason: "Sign in to the account." } },
+  ])("does not follow up a promise when $name pauses the run", async ({ name, args }) => {
+    const server = await startModelEmulator({
+      steps: [
+        {
+          expect() {},
+          response: {
+            type: "tool",
+            id: "pause-tool",
+            name,
+            arguments: args,
+            assistantText: "I'm continuing with the analysis now and will report back shortly.",
+          },
+        },
+      ],
+    });
+    cleanups.push(() => server.close());
+    const events = await collect(
+      new PiAgentRuntime().run(
+        runRequest(server.model, {
+          tools: [
+            {
+              name,
+              description: "Request user input",
+              inputSchema: {
+                type: "object",
+                properties: {
+                  question: { type: "string" },
+                  options: { type: "array", items: { type: "string" } },
+                  reason: { type: "string" },
+                },
+              },
+            },
+          ],
+        }),
+      ),
+    );
+    server.assertComplete();
+    expect(server.requests).toHaveLength(1);
+    expect(events.some((event) => event.type === (name === "ask_user" ? "ask" : "takeover"))).toBe(
+      true,
+    );
+    expect(events.at(-1)?.type).toBe("done");
+  });
+
+  it("uses pending user steering instead of queuing a promise follow-up", async () => {
+    const promise = "I'm collecting the available account data.";
+    const steering = "Stop collecting data and summarize what is already available.";
+    let claims = 0;
+    const server = await startModelEmulator({
+      steps: [
+        { expect() {}, response: { type: "text", text: promise } },
+        {
+          expect(request) {
+            expect(request.messages.at(-1)).toMatchObject({
+              role: "user",
+              content: steering,
+            });
+            expect(JSON.stringify(request.messages)).not.toContain("You said you would continue.");
+          },
+          response: { type: "text", text: "Only the current month's statement is available." },
+        },
+      ],
+    });
+    cleanups.push(() => server.close());
+    await collect(
+      new PiAgentRuntime().run(
+        runRequest(server.model, {
+          claimSteering: async () => {
+            claims += 1;
+            return claims === 2 ? [{ id: "steering-1", text: steering }] : [];
+          },
+        }),
+      ),
+    ).catch((error) => {
+      server.assertComplete();
+      throw error;
+    });
+    server.assertComplete();
+    expect(server.requests).toHaveLength(2);
+  });
+
+  it("does not follow up a promise after the last allowed tool call", async () => {
+    vi.stubEnv("MAX_TOOL_CALLS_PER_TURN", "1");
+    const promise = "I'll retrieve the older transactions next.";
+    const server = await startModelEmulator({
+      steps: [
+        {
+          expect() {},
+          response: {
+            type: "tool",
+            id: "last-allowed-tool",
+            name: "write_file",
+            arguments: { path: "notes.txt", content: "current totals" },
+          },
+        },
+        { expect() {}, response: { type: "text", text: promise } },
+      ],
+    });
+    cleanups.push(() => server.close());
+    const executeTool = vi.fn(async () => ({ ok: true }));
+    const events = await collect(
+      new PiAgentRuntime().run(runRequest(server.model, { executeTool })),
+    );
+    server.assertComplete();
+    expect(executeTool).toHaveBeenCalledOnce();
+    expect(server.requests).toHaveLength(2);
+    expect(events.at(-1)).toEqual({ type: "done", text: promise });
   });
 
   it.each([undefined, "retrieval", "snapshots", "cache-aware"] as const)(

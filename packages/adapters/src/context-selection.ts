@@ -435,7 +435,7 @@ export function selectContext<T extends ContextMessage>(
     : recentExchangeWindow(
         groups.reduce(
           (count, group) =>
-            count + Number(group.indexes.some((index) => messages[index]!.role === "user")),
+            count + Number(group.indexes.some((index) => isConversationTurn(messages[index]!))),
           0,
         ),
         Math.max(1, options.recentExchanges ?? 8),
