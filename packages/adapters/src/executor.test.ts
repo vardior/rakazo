@@ -19,6 +19,8 @@ import {
   threadContextForRun,
   toolCompletionAuditPayload,
   toolCompletionFromResult,
+  toolWorkRecordEntry,
+  toolWorkRecordTarget,
   userTurnInstructions,
   VOICE_CALL_INSTRUCTION,
   voiceCallInstruction,
@@ -258,6 +260,90 @@ describe("tool completion audit", () => {
 
     expect(payload).toMatchObject({ outcome: "succeeded" });
     expect(payload).not.toHaveProperty("error");
+  });
+});
+
+describe("run work record redaction", () => {
+  it("redacts registered secrets before truncating text results and targets", () => {
+    const secret = "synthetic-protected-value";
+    const entry = toolWorkRecordEntry(
+      {
+        name: "read_file",
+        executionId: "call-1",
+        durationMs: 1,
+        result: {
+          content: [{ type: "text", text: `balance=4321.09 ${secret} ${"x".repeat(400)}` }],
+        },
+      },
+      `reports/${secret}.txt`,
+      [secret],
+    );
+    expect(entry).toMatchObject({ tool: "read_file", target: "reports/[redacted].txt" });
+    expect(entry.result.startsWith("balance=4321.09 [redacted]")).toBe(true);
+    expect(entry.result.endsWith("… [truncated]")).toBe(true);
+    expect(entry.result.length).toBe(240);
+    expect(JSON.stringify(entry)).not.toContain(secret);
+  });
+
+  it("redacts secrets inside serialized JSON results before bounding their text", () => {
+    const secret = 'synthetic-"credential"';
+    const entry = toolWorkRecordEntry(
+      {
+        name: "read_file",
+        executionId: "json-1",
+        durationMs: 1,
+        result: {
+          content: [{ type: "text", text: JSON.stringify({ balance: "4321.09", value: secret }) }],
+        },
+      },
+      "report.json",
+      [secret],
+    );
+    expect(entry.result).toBe('{"balance":"4321.09","value":"[redacted]"}');
+  });
+
+  it("summarizes only paths, cleaned URLs, or a command's executable", () => {
+    expect(toolWorkRecordTarget({ path: "reports/statement.pdf", content: "private" }, [])).toBe(
+      "reports/statement.pdf",
+    );
+    expect(
+      toolWorkRecordTarget(
+        { url: "https://fake:password@example.test/bank?token=private#private" },
+        [],
+      ),
+    ).toBe("https://example.test/bank");
+    expect(toolWorkRecordTarget({ command: "echo private-value; curl private-url" }, [])).toBe(
+      "echo",
+    );
+    expect(toolWorkRecordTarget({ command: "TOKEN=private-value curl example.test" }, [])).toBe("");
+    expect(toolWorkRecordTarget({ password: "private", body: "private" }, [])).toBe("");
+  });
+
+  it("keeps only the tool name for image-only results and records thrown errors", () => {
+    expect(
+      toolWorkRecordEntry(
+        {
+          name: "computer_observe",
+          executionId: "image-1",
+          durationMs: 1,
+          result: { content: [{ type: "image", data: "private-image-bytes" }] },
+        },
+        "private-target",
+        [],
+      ),
+    ).toEqual({ tool: "computer_observe", target: "", result: "" });
+    expect(
+      toolWorkRecordEntry(
+        {
+          name: "shell",
+          executionId: "error-1",
+          durationMs: 1,
+          error: new Error("failed synthetic-secret"),
+        },
+        "echo",
+        ["synthetic-secret"],
+      ).result,
+    ).toBe("failed [redacted]");
   });
 });
 

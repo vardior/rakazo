@@ -7,6 +7,8 @@ import type {
   SemanticMemoryProvider,
 } from "@rakazo/adapter-kit";
 import { ScriptedAgentRuntime } from "@rakazo/adapters";
+import type { MessageBlock } from "@rakazo/contracts";
+import { blocksToAgentHistoryText } from "@rakazo/core";
 import { approvalEffectKey } from "@rakazo/core/node/approval-effect-key";
 import { createThreadEvents, createThreadMessage, loadRunHistoryMessages } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -309,6 +311,100 @@ describeIntegration("run executor lifecycle", () => {
     expect(attempts).toHaveLength(1);
     expect(attempts[0]).toMatchObject({ fence: 1, status: "completed" });
   });
+
+  it.each(["failed", "cancelled", "teaching", "group"])(
+    "keeps partial tool work when a run is %s",
+    async (outcome) => {
+      const seeded = await seedRun(`work-record-${outcome}`, "Check the balance.");
+      let skillId: string | undefined;
+      let groupId: string | undefined;
+      if (outcome === "group") {
+        const helper = await rpc<{ id: string }>(seeded.cookie, "bots/create", {
+          name: "Helper",
+          title: "",
+          description: "",
+          instructions: "",
+          notifyOnFinish: false,
+        });
+        const group = await rpc<{ id: string }>(seeded.cookie, "groups/create", {
+          name: "Balance group",
+          botIds: [seeded.bot.id, helper.id],
+        });
+        groupId = group.id;
+        const thread = await handles.prisma.thread.findUniqueOrThrow({ where: { groupId } });
+        await handles.prisma.task.update({
+          where: { id: seeded.task.id },
+          data: { threadId: thread.id },
+        });
+        await handles.prisma.run.update({
+          where: { id: seeded.run.id },
+          data: { threadId: thread.id },
+        });
+        seeded.thread = thread;
+      }
+      const runtime = vi.spyOn(handles.runtime, "run").mockImplementation(async function* () {
+        yield {
+          type: "tool",
+          name: "shell",
+          args: { command: "echo S4_BALANCE=4321.09" },
+          executionId: "partial-balance",
+        };
+        if (outcome !== "failed") {
+          if (outcome === "teaching") {
+            const skill = await rpc<{ id: string }>(seeded.cookie, "skills/start", {
+              botId: seeded.bot.id,
+              goal: "Check a balance",
+            });
+            skillId = skill.id;
+          } else if (groupId) {
+            await rpc(seeded.cookie, "groups/archive", { groupId });
+          } else {
+            await rpc(seeded.cookie, "threads/stop", { botId: seeded.bot.id });
+          }
+          yield { type: "done", text: "" };
+        } else {
+          throw new Error("Synthetic failure after reading the balance");
+        }
+      });
+      try {
+        await handles.executor.continueRun(seeded.run.id, "work-record-worker");
+        const run = await handles.prisma.run.findUniqueOrThrow({ where: { id: seeded.run.id } });
+        expect(run.status).toBe(outcome === "failed" ? "failed" : "cancelled");
+        const messages = await handles.prisma.message.findMany({
+          where: { runId: seeded.run.id, role: "bot" },
+          orderBy: { seq: "asc" },
+        });
+        expect(messages).toHaveLength(1);
+        const blocks = messages[0]!.blocks as MessageBlock[];
+        expect(blocksToAgentHistoryText(blocks)).toContain("S4_BALANCE=4321.09");
+        expect(blocks[0]).toMatchObject({ kind: "steps", steps: [{ label: "Shell", count: 1 }] });
+        const before = JSON.stringify(blocks);
+        await handles.executor.continueRun(seeded.run.id, "late-work-record-worker");
+        if (outcome !== "failed") {
+          await createThreadEvents(handles.prisma).append({
+            spaceId: seeded.me.spaceId,
+            threadId: seeded.thread.id,
+            botId: seeded.bot.id,
+            runId: seeded.run.id,
+            type: "run.cancelled",
+            payload: {},
+          });
+          expect(
+            await handles.prisma.message.count({ where: { runId: seeded.run.id, role: "bot" } }),
+          ).toBe(1);
+        }
+        expect(
+          JSON.stringify(
+            (await handles.prisma.message.findUniqueOrThrow({ where: { id: messages[0]!.id } }))
+              .blocks,
+          ),
+        ).toBe(before);
+      } finally {
+        runtime.mockRestore();
+        if (skillId) await rpc(seeded.cookie, "skills/stop", { skillId });
+      }
+    },
+  );
 
   it("reclaims an expired running lease with a higher fence", async () => {
     const seeded = await seedRun("expired", "write a file that says recovered", {

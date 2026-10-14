@@ -1,4 +1,4 @@
-import type { AttachmentMimeType, MessageBlock } from "@rakazo/contracts";
+import type { AttachmentMimeType, MessageBlock, RunWorkRecordEntry } from "@rakazo/contracts";
 import {
   ATTACHMENT_MAX_BASE64_LENGTH,
   ATTACHMENT_MAX_BYTES,
@@ -101,8 +101,54 @@ export function promptTextForAttachments(
   return [caption, ...notes].filter(Boolean).join("\n\n") || "See attached files.";
 }
 
+export const MAX_WORK_RECORD_TOOL_CHARS = 80;
+export const MAX_WORK_RECORD_TARGET_CHARS = 120;
+export const MAX_WORK_RECORD_RESULT_CHARS = 240;
+export const MAX_RUN_WORK_RECORD_CHARS = 3_000;
+export const MAX_RUN_WORK_RECORD_CALLS = 50;
+
+export function boundedWorkRecordText(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const marker = "… [truncated]";
+  const head = text.slice(0, maxChars - marker.length).replace(/[\uD800-\uDBFF]$/, "");
+  return head + marker;
+}
+
+export function formatRunWorkRecord(
+  entries: readonly RunWorkRecordEntry[],
+  truncated = false,
+): string {
+  if (entries.length === 0) return "";
+  const lines = entries.map(({ tool, target, result }) =>
+    JSON.stringify({ tool, ...(target ? { target } : {}), ...(result ? { result } : {}) }),
+  );
+  return [
+    "[past work]",
+    ...(truncated ? ["[older tool calls omitted]"] : []),
+    ...lines,
+    "[/past work]",
+  ].join("\n");
+}
+
+export function boundedRunWorkRecord(entries: readonly RunWorkRecordEntry[]): {
+  workRecord: RunWorkRecordEntry[];
+  workRecordTruncated?: true;
+} {
+  const workRecord = entries.slice(-MAX_RUN_WORK_RECORD_CALLS).map(({ tool, target, result }) => ({
+    tool: boundedWorkRecordText(tool, MAX_WORK_RECORD_TOOL_CHARS),
+    target: boundedWorkRecordText(target, MAX_WORK_RECORD_TARGET_CHARS),
+    result: boundedWorkRecordText(result, MAX_WORK_RECORD_RESULT_CHARS),
+  }));
+  let truncated = workRecord.length < entries.length;
+  while (formatRunWorkRecord(workRecord, truncated).length > MAX_RUN_WORK_RECORD_CHARS) {
+    workRecord.shift();
+    truncated = true;
+  }
+  return { workRecord, ...(truncated ? { workRecordTruncated: true as const } : {}) };
+}
+
 export function blocksToAgentHistoryText(blocks: MessageBlock[]): string {
-  return blocks
+  const text = blocks
     .map((block) => {
       if (block.kind === "text") return block.text;
       if (block.kind === "chart") return `[chart: ${block.name}]`;
@@ -122,6 +168,12 @@ export function blocksToAgentHistoryText(blocks: MessageBlock[]): string {
     })
     .filter(Boolean)
     .join("\n");
+  const records = blocks.flatMap((block) =>
+    block.kind === "steps"
+      ? formatRunWorkRecord(block.workRecord ?? [], block.workRecordTruncated === true)
+      : [],
+  );
+  return [text, ...records].filter(Boolean).join("\n");
 }
 
 const EXTENSION_MIME_TYPES: Record<string, AttachmentMimeType> = {

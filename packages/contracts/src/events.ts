@@ -92,6 +92,13 @@ const ChartBlock = z
 export const SecretAskPurpose = z.enum(["otp", "password", "api_key"]);
 export type SecretAskPurpose = z.infer<typeof SecretAskPurpose>;
 
+export const RunWorkRecordEntrySchema = z.object({
+  tool: z.string(),
+  target: z.string(),
+  result: z.string(),
+});
+export type RunWorkRecordEntry = z.infer<typeof RunWorkRecordEntrySchema>;
+
 export const MessageBlock = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("text"), text: z.string() }),
   z.object({
@@ -173,6 +180,8 @@ export const MessageBlock = z.discriminatedUnion("kind", [
     kind: z.literal("steps"),
     steps: z.array(z.object({ label: z.string(), count: z.number().int().positive() })),
     durationMs: z.number().int().nonnegative().optional(),
+    workRecord: z.array(RunWorkRecordEntrySchema).optional(),
+    workRecordTruncated: z.literal(true).optional(),
   }),
   z.object({
     kind: z.literal("subagent"),

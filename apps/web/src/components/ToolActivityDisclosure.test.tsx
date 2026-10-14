@@ -198,6 +198,29 @@ describe("StandaloneToolActivity", () => {
 });
 
 describe("ToolOnlyNarration", () => {
+  it("renders identical markup when a steps block carries a model-only work record", () => {
+    const steps = stepsOf(2);
+    const original = renderToStaticMarkup(
+      <ToolOnlyNarration live={false} blocks={[{ kind: "steps", steps, durationMs: 4_000 }]} />,
+    );
+    const recorded = renderToStaticMarkup(
+      <ToolOnlyNarration
+        live={false}
+        blocks={[
+          {
+            kind: "steps",
+            steps,
+            durationMs: 4_000,
+            workRecord: [{ tool: "shell", target: "echo", result: "S4_BALANCE=4321.09" }],
+            workRecordTruncated: true,
+          },
+        ]}
+      />,
+    );
+    expect(recorded).toBe(original);
+    expect(recorded).not.toContain("S4_BALANCE");
+  });
+
   it("renders a live tools-only message as an open slim line, not a bubble", () => {
     const html = renderToStaticMarkup(
       <ToolOnlyNarration live blocks={[{ kind: "steps", steps: stepsOf(2) }]} />,

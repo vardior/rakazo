@@ -1,4 +1,5 @@
 import type { RealtimeFanout } from "@rakazo/adapter-kit";
+import type { RunWorkRecordEntry } from "@rakazo/contracts";
 import {
   type BotSecretDestination,
   encodeLoginSecret,
@@ -6,13 +7,17 @@ import {
   type MessageBlock,
   MessageBlock as MessageBlockSchema,
   type ProductEvent,
+  RunWorkRecordEntrySchema,
 } from "@rakazo/contracts";
 import {
+  appendToolStep,
   blocksToAgentHistoryText,
+  boundedRunWorkRecord,
   callIdFromClientNonce,
   isApprovalAskBlock,
   isConversationalRun,
   isSecretAskBlock,
+  MAX_RUN_WORK_RECORD_CALLS,
   messagingChannelId,
   resolveAskChoice,
   sanitizeJsonValue,
@@ -294,7 +299,7 @@ export async function clearThread(
     });
     const now = new Date();
     const runIds = activeRuns.map((run) => run.id);
-    await cancelRunsInTransaction(tx, activeRuns, now);
+    await cancelRunsInTransaction(tx, activeRuns, now, { preserveWork: false });
     // Expire as tombstones so a still-open provider screen claim cannot reset fencing to 1.
     await expireComputerExecutionLeases(tx, { runId: { in: runIds } });
     await tx.computer.updateMany({
@@ -1151,6 +1156,113 @@ export function completedRunBlocks(
   );
 }
 
+async function loadRunWorkRecord(
+  tx: Prisma.TransactionClient,
+  runId: string,
+): Promise<Extract<MessageBlock, { kind: "steps" }> | null> {
+  const calls = await tx.event.findMany({
+    where: { runId, type: "agent.tool.called" },
+    orderBy: { seq: "desc" },
+    take: MAX_RUN_WORK_RECORD_CALLS + 1,
+    select: { payload: true },
+  });
+  const entries = calls.flatMap(({ payload }) => {
+    const record = payload as Record<string, unknown>;
+    const entry = RunWorkRecordEntrySchema.safeParse(record.workRecordEntry);
+    return entry.success && typeof record.executionId === "string"
+      ? [{ executionId: record.executionId, entry: entry.data }]
+      : [];
+  });
+  if (entries.length === 0) return null;
+  const completions = await tx.event.findMany({
+    where: {
+      runId,
+      type: "agent.tool.completed",
+      OR: entries.map(({ executionId }) => ({
+        payload: { path: ["executionId"], equals: executionId },
+      })),
+    },
+    orderBy: { seq: "desc" },
+    take: MAX_RUN_WORK_RECORD_CALLS + 1,
+    select: { payload: true },
+  });
+  const results = new Map<string, RunWorkRecordEntry>();
+  for (const { payload } of completions) {
+    const record = payload as Record<string, unknown>;
+    const entry = RunWorkRecordEntrySchema.safeParse(record.workRecordEntry);
+    if (
+      entry.success &&
+      typeof record.executionId === "string" &&
+      !results.has(record.executionId)
+    ) {
+      results.set(record.executionId, entry.data);
+    }
+  }
+  const ordered = entries
+    .reverse()
+    .map(({ executionId, entry }) => results.get(executionId) ?? entry);
+  return {
+    kind: "steps",
+    steps: ordered.reduce<Extract<MessageBlock, { kind: "steps" }>["steps"]>(
+      (steps, entry) => appendToolStep(steps, entry.tool),
+      [],
+    ),
+    ...boundedRunWorkRecord(ordered),
+  };
+}
+
+function attachRunWorkRecord(
+  blocks: MessageBlock[],
+  record: Extract<MessageBlock, { kind: "steps" }> | null,
+): MessageBlock[] {
+  if (!record) return blocks;
+  const index = blocks.findLastIndex((block) => block.kind === "steps");
+  if (index < 0) return [...blocks, record];
+  return blocks.map((block, blockIndex) =>
+    blockIndex === index
+      ? { ...block, workRecord: record.workRecord, workRecordTruncated: record.workRecordTruncated }
+      : block,
+  );
+}
+
+export async function persistCancelledRunWorkRecord(
+  tx: Prisma.TransactionClient,
+  runId: string,
+): Promise<void> {
+  const record = await loadRunWorkRecord(tx, runId);
+  if (!record) return;
+  const run = await tx.run.findUniqueOrThrow({
+    where: { id: runId },
+    select: { spaceId: true, threadId: true, botId: true, status: true },
+  });
+  if (run.status !== "cancelled") throw new RunHistoryWriteError();
+  const clientNonce = `run-work:${runId}`;
+  const existing = await tx.message.findFirst({
+    where: { threadId: run.threadId, clientNonce },
+    select: { id: true },
+  });
+  if (existing) return;
+  const message = await createThreadMessageInTransaction(tx, {
+    threadId: run.threadId,
+    role: "bot",
+    botId: run.botId,
+    runId,
+    blocks: [record],
+    clientNonce,
+    markUnread: false,
+    allowCancelledRun: true,
+  });
+  await appendEventInTransaction(tx, {
+    spaceId: run.spaceId,
+    threadId: run.threadId,
+    botId: run.botId,
+    runId,
+    type: "thread.message.created",
+    payload: { messageId: message.id, role: "bot", blocks: [record] },
+    allowCancelledRun: true,
+  });
+}
+
 async function finalizeRunOnce(
   prisma: PrismaClient,
   input: FinalizeRunInput,
@@ -1212,26 +1324,29 @@ async function finalizeRunOnce(
     });
     if (task.count !== 1) throw new Error("Run task was not available to finalize");
 
-    if (input.outcome === "completed") {
-      const completedBlocks = completedRunBlocks(input.blocks, writableRun?.startedAt ?? null, now);
-      if (completedBlocks.length > 0) {
-        const message = await createThreadMessageInTransaction(tx, {
-          threadId: input.threadId,
-          role: "bot",
-          blocks: completedBlocks,
-          botId: input.botId,
-          runId: input.runId,
-          markUnread: input.markUnread,
-        });
-        await appendEventInTransaction(tx, {
-          spaceId: input.spaceId,
-          threadId: input.threadId,
-          botId: input.botId,
-          type: "thread.message.created",
-          runId: input.runId,
-          payload: { messageId: message.id, role: "bot", blocks: completedBlocks },
-        });
-      }
+    const workRecord = await loadRunWorkRecord(tx, input.runId);
+    const completedBlocks = completedRunBlocks(
+      attachRunWorkRecord(input.outcome === "completed" ? input.blocks : [], workRecord),
+      writableRun?.startedAt ?? null,
+      now,
+    );
+    if (completedBlocks.length > 0) {
+      const message = await createThreadMessageInTransaction(tx, {
+        threadId: input.threadId,
+        role: "bot",
+        blocks: completedBlocks,
+        botId: input.botId,
+        runId: input.runId,
+        markUnread: input.outcome === "completed" ? input.markUnread : false,
+      });
+      await appendEventInTransaction(tx, {
+        spaceId: input.spaceId,
+        threadId: input.threadId,
+        botId: input.botId,
+        type: "thread.message.created",
+        runId: input.runId,
+        payload: { messageId: message.id, role: "bot", blocks: completedBlocks },
+      });
     }
     const lastEvent = await appendEventInTransaction(tx, {
       spaceId: input.spaceId,
@@ -1369,18 +1484,19 @@ export async function appendEventInTransaction(
   tx: Prisma.TransactionClient,
   input: AppendEventInput,
 ) {
+  // run.cancelled is appended after the run row already reads cancelled, so it
+  // asserts the terminal status where every other event needs a writable run.
+  if (input.type === "run.cancelled") {
+    await assertRunIsCancelled(tx, input.runId);
+    await persistCancelledRunWorkRecord(tx, input.runId!);
+  } else {
+    await assertRunCanWriteHistory(tx, input.runId, { allowCancelled: input.allowCancelledRun });
+  }
   const thread = await tx.thread.update({
     where: { id: input.threadId },
     data: { nextEventSeq: { increment: 1 } },
     select: { nextEventSeq: true },
   });
-  // run.cancelled is appended after the run row already reads cancelled, so it
-  // asserts the terminal status where every other event needs a writable run.
-  if (input.type === "run.cancelled") {
-    await assertRunIsCancelled(tx, input.runId);
-  } else {
-    await assertRunCanWriteHistory(tx, input.runId, { allowCancelled: input.allowCancelledRun });
-  }
   // Unpaired UTF-16 surrogates (e.g. a split emoji high half) are invalid JSON for Postgres.
   const payload = sanitizeJsonValue(input.payload);
   return tx.event.create({

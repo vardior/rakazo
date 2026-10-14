@@ -1,9 +1,11 @@
+import type { MessageBlock } from "@rakazo/contracts";
 import { describe, expect, it } from "vitest";
 import {
   AttachmentValidationError,
   attachmentExtensionForMimeType,
   attachmentsForBot,
   blocksToAgentHistoryText,
+  boundedRunWorkRecord,
   decodeAttachmentBase64,
   inferAttachmentMimeType,
   promptTextForAttachments,
@@ -125,6 +127,81 @@ describe("attachment helpers", () => {
     ];
     expect(attachmentsForBot(attachments, "bot-two")).toEqual([attachments[1]]);
     expect(attachmentsForBot(attachments, undefined)).toEqual([]);
+  });
+});
+
+describe("past tool work in history", () => {
+  it("renders after the reply with stable bytes without changing step labels or counts", () => {
+    const blocks: MessageBlock[] = [
+      {
+        kind: "steps",
+        steps: [{ label: "Shell", count: 1 }],
+        durationMs: 42,
+        workRecord: [{ tool: "shell", target: "echo", result: "S4_BALANCE=4321.09" }],
+      },
+      { kind: "text", text: "Checked." },
+    ];
+    const before = structuredClone(blocks);
+    const rendered =
+      'Checked.\n[past work]\n{"tool":"shell","target":"echo","result":"S4_BALANCE=4321.09"}\n[/past work]';
+    expect(blocksToAgentHistoryText(blocks)).toBe(rendered);
+    expect(blocksToAgentHistoryText(JSON.parse(JSON.stringify(blocks)))).toBe(rendered);
+    expect(blocks).toEqual(before);
+    expect(
+      blocksToAgentHistoryText([{ kind: "steps", steps: [{ label: "Shell", count: 1 }] }]),
+    ).toBe("");
+  });
+
+  it("bounds fields and the rendered run, marking cuts and dropping the oldest calls", () => {
+    const entries = Array.from({ length: 100 }, (_, index) => ({
+      tool: `tool-${index}-${"t".repeat(100)}`,
+      target: "p".repeat(200),
+      result: `fact-${index} ${"r".repeat(400)}`,
+    }));
+    const record = boundedRunWorkRecord(entries);
+    const text = blocksToAgentHistoryText([{ kind: "steps", steps: [], ...record }]);
+    expect(text.length).toBeLessThanOrEqual(3_000);
+    expect(text).toContain("[older tool calls omitted]");
+    expect(text).not.toContain('"tool":"tool-0-');
+    expect(text).toContain("fact-99");
+    for (const entry of record.workRecord) {
+      expect(entry.tool.length).toBeLessThanOrEqual(80);
+      expect(entry.target.length).toBeLessThanOrEqual(120);
+      expect(entry.result.length).toBeLessThanOrEqual(240);
+      expect(entry.result.endsWith("… [truncated]")).toBe(true);
+    }
+    const escaped = boundedRunWorkRecord(
+      Array.from({ length: 100 }, () => ({
+        tool: "tool",
+        target: "",
+        result: "\u0000".repeat(240),
+      })),
+    );
+    expect(
+      blocksToAgentHistoryText([{ kind: "steps", steps: [], ...escaped }]).length,
+    ).toBeLessThanOrEqual(3_000);
+    const small = boundedRunWorkRecord(
+      Array.from({ length: 100 }, () => ({ tool: "t", target: "", result: "" })),
+    );
+    expect(small.workRecord).toHaveLength(50);
+    expect(small.workRecordTruncated).toBe(true);
+  });
+
+  it("escapes result control characters and renders image-only work as its tool name", () => {
+    expect(
+      blocksToAgentHistoryText([
+        {
+          kind: "steps",
+          steps: [],
+          workRecord: [
+            { tool: "read_file", target: "report.txt", result: 'one\n"two"' },
+            { tool: "computer_observe", target: "", result: "" },
+          ],
+        },
+      ]),
+    ).toBe(
+      '[past work]\n{"tool":"read_file","target":"report.txt","result":"one\\n\\"two\\""}\n{"tool":"computer_observe"}\n[/past work]',
+    );
   });
 });
 

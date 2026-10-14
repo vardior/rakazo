@@ -3,11 +3,119 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { runTrial } from "./evals/runner.js";
+import type { ModelEmulatorRequest } from "./model-emulator.js";
 import { startModelEmulator } from "./model-emulator.js";
 
 const databaseAvailable = process.env.VERIFY_DATABASE === "1" && Boolean(process.env.DATABASE_URL);
 
 describe.skipIf(!databaseAvailable)("eval history accounting", () => {
+  it("retains a tool-only fact in the bot's own stable history across later runs", async () => {
+    let firstRecord = "";
+    const fixtureKey = "offline-work-record-key";
+    const model = await startModelEmulator({
+      apiKey: fixtureKey,
+      steps: [
+        {
+          expect(request) {
+            expect(JSON.stringify(request.messages)).not.toContain("S4_BALANCE=4321.09");
+          },
+          response: {
+            type: "tool",
+            id: "read-balance",
+            name: "shell",
+            arguments: { command: `echo S4_BALANCE=4321.09 ${fixtureKey}` },
+          },
+        },
+        {
+          expect(request) {
+            expect(
+              String(request.messages.findLast((message) => message.role === "tool")?.content),
+            ).toContain("S4_BALANCE=4321.09");
+          },
+          response: { type: "text", text: "Checked." },
+        },
+        ...["What was the balance?", "Recall it again."].map((question) => ({
+          expect(request: ModelEmulatorRequest) {
+            expect(JSON.stringify(request.messages)).toContain(question);
+            expect(request.messages.some((message) => message.role === "tool")).toBe(false);
+            const past = request.messages.find((message) =>
+              String(message.content).includes("S4_BALANCE=4321.09"),
+            );
+            expect(past).toBeDefined();
+            const content = String(past!.content);
+            expect(content).not.toContain(fixtureKey);
+            expect(content).toContain("[redacted]");
+            expect(content).toContain("Assistant: Checked.");
+            expect(content.indexOf("[past work]")).toBeGreaterThan(content.indexOf("Checked."));
+            const record = content.slice(
+              content.indexOf("[past work]"),
+              content.indexOf("[/past work]") + "[/past work]".length,
+            );
+            if (firstRecord) expect(record).toBe(firstRecord);
+            firstRecord = record;
+          },
+          response: { type: "text" as const, text: "Recalled." },
+        })),
+      ],
+    });
+    const dataDir = await mkdtemp(path.join(tmpdir(), "rakazo-work-record-"));
+    try {
+      const { createApp } = await import("../../../apps/api/src/app.ts");
+      const result = await runTrial(
+        {
+          id: "offline-work-record",
+          purpose: "Keep tool facts across runs without repeating the tool or summarizing them.",
+          steps: [
+            { ask: "Check the balance." },
+            { ask: "What was the balance?" },
+            { ask: "Recall it again." },
+          ],
+          connections: [],
+          grade: () => [
+            { id: "past-work-visible", pass: firstRecord.includes("S4_BALANCE=4321.09") },
+          ],
+        },
+        1,
+        {
+          connection: {
+            provider: model.model.provider,
+            modelId: model.model.id,
+            baseUrl: model.baseUrl,
+            apiKey: fixtureKey,
+            contextWindow: 160_000,
+            maxTokens: 4096,
+          },
+          timeoutMs: 20_000,
+          maxToolCalls: 1,
+          createApp: (composio) =>
+            createApp({
+              databaseUrl: process.env.DATABASE_URL!,
+              realtimeDatabaseUrl: process.env.DATABASE_URL!,
+              authUrl: "http://127.0.0.1:5173",
+              webOrigin: "http://127.0.0.1:5173",
+              dataDir,
+              sandboxProvider: "fake",
+              agentRuntime: "pi",
+              wakeupDriver: "memory",
+              signupsEnabled: "true",
+              composio,
+              encryptionKey: "offline-work-record-encryption-key",
+            }),
+        },
+      );
+      expect(result).toMatchObject({
+        status: "passed",
+        toolCalls: 1,
+        modelCalls: 4,
+        cleanupFailed: false,
+      });
+      model.assertComplete();
+    } finally {
+      await model.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it.each([2, 1])(
     "retains cleared-run tool calls with a budget of %s",
     async (maxToolCalls) => {

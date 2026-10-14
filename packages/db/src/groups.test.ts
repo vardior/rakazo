@@ -210,7 +210,7 @@ describe("archiveGroup", () => {
       task: { updateMany: taskUpdateMany },
       computerExecutionLease: { findMany: leaseFindMany, updateMany: leaseUpdateMany },
       computer: { findMany: findManyComputers, updateMany: computerUpdateMany },
-      event: { deleteMany: eventDeleteMany },
+      event: { deleteMany: eventDeleteMany, findMany: vi.fn(async () => []) },
     };
     prisma = {
       $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
