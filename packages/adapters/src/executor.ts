@@ -189,6 +189,7 @@ import {
   listBotSecrets,
   loadBotCommandEnvironment,
   loadBotSecretRedactions,
+  MIN_REDACTABLE_SECRET_LENGTH,
   normalizeSecretDestination,
   requestWithBotSecret,
   resolveLoginFill,
@@ -252,7 +253,11 @@ import {
   unchangedVisualStreakAfterPageBrowser,
 } from "./computer-tools.js";
 import { checkpointRunComputerWorkspace } from "./computer-workspace.js";
-import { redactConnectorPayload, sanitizeConnectorError } from "./connector-safety.js";
+import {
+  redactConnectorPayload,
+  redactModelContextSecrets,
+  sanitizeConnectorError,
+} from "./connector-safety.js";
 import { formatCurrentTimeInstruction } from "./current-time.js";
 import {
   findDeferredTools,
@@ -6708,7 +6713,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
               },
               prompt,
               redactModelContext: <T>(value: T): T =>
-                redactConnectorPayload(value, runSecrets) as T,
+                redactModelContextSecrets(
+                  value,
+                  runSecrets.filter((secret) => secret.length >= MIN_REDACTABLE_SECRET_LENGTH),
+                ),
               contextStrategy,
               instructions: userTurnInstructions({
                 botInstructions: runIdentityInstruction(bot, run.trigger),
