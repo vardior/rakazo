@@ -2,7 +2,7 @@ import type { AgentRunRequest } from "@rakazo/adapter-kit";
 import { PiAgentRuntime } from "@rakazo/adapters";
 import { expect, it, vi } from "vitest";
 import type { ModelEmulatorRequest } from "../model-emulator.js";
-import { startModelEmulator } from "../model-emulator.js";
+import { completionCheckDone, startModelEmulator } from "../model-emulator.js";
 import { EvalServices } from "./services.js";
 import type { DiagnosticWireObservation } from "./wire-observer.js";
 import { diagnosticWireFetch, installDiagnosticWireObserver } from "./wire-observer.js";
@@ -143,6 +143,7 @@ it("observes actual Pi post-selection JSON controls through twelve dependent com
               };
         },
       })),
+      completionCheckDone,
     ],
   });
   const records: DiagnosticWireObservation[] = [];
@@ -184,8 +185,9 @@ it("observes actual Pi post-selection JSON controls through twelve dependent com
       /* Consume the real runtime. */
     }
     server.assertComplete();
-    expect(records).toHaveLength(13);
-    for (const [index, record] of records.slice(1).entries()) {
+    expect(records).toHaveLength(14);
+    const diagnosticRecords = records.slice(0, 13);
+    for (const [index, record] of diagnosticRecords.slice(1).entries()) {
       expect(record.availability).toBe("observed");
       expect(record.results?.map((r) => r.segment)).toEqual(
         Array.from({ length: index + 1 }, (_, i) => i + 1),
@@ -196,7 +198,7 @@ it("observes actual Pi post-selection JSON controls through twelve dependent com
       expect(record.results?.at(-1)?.bytes).toBeLessThanOrEqual(12000);
       expect(record.results?.slice(0, -1).every((r) => r.bytes <= 1024)).toBe(true);
     }
-    expect(records.at(-1)?.results?.at(-1)?.nextCursor).toBeNull();
+    expect(diagnosticRecords.at(-1)?.results?.at(-1)?.nextCursor).toBeNull();
     expect(JSON.stringify(records)).not.toMatch(/private|Synthetic detailed|ledger-indexer/);
   } finally {
     restore();

@@ -15,6 +15,7 @@ import {
 } from "@rakazo/adapters";
 import { CONTACTS_CSV, CONTACTS_PATH, EXPORT_FIXTURE_URL } from "./computer-replay-fixture.js";
 import {
+  completionCheckDone,
   type ModelEmulatorRequest,
   type ModelEmulatorResponse,
   type ModelEmulatorStep,
@@ -100,6 +101,7 @@ export async function runComputerReplay(
       step({ type: "text", text: "Exported 2 contacts." }, "read-csv", (result) =>
         assert.equal(result.content, CONTACTS_CSV),
       ),
+      completionCheckDone,
     ],
   });
   const usedTools: string[] = [];
