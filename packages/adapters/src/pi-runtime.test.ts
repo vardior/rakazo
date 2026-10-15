@@ -21,6 +21,9 @@ describe("commitsToUnfinishedWork", () => {
     "The first page is loaded. I'll retrieve the older history next.",
     "I have the statements.\nI'm gathering the missing transactions now.",
     "I'LL REPORT BACK SHORTLY.",
+    "Yes—I’m continuing now. Sorry for the silence.",
+    "Both providers are saved.\n\nNext I’ll consolidate the verified coverage and flag the remaining gaps.",
+    "OK, I'll compile the policy table now.",
   ])("detects an English-only unfinished-work commitment: %s", (text) => {
     expect(commitsToUnfinishedWork(text)).toBe(true);
   });
@@ -55,6 +58,7 @@ describe("commitsToUnfinishedWork", () => {
     "> I'll report back shortly.\nThat was the earlier reply.",
     "",
     "Je continue l'analyse et je reviendrai avec les résultats.",
+    "Understood—I’ll treat that provider as cancelled and exclude it from further checks.",
   ])("leaves completed, quoted, non-English or user-blocked replies alone: %s", (text) => {
     expect(commitsToUnfinishedWork(text)).toBe(false);
   });

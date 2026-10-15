@@ -116,33 +116,36 @@ describe("real Pi against an offline model HTTP endpoint", () => {
   it("preserves serialized page and screenshot prefixes between pruning batches", async () => {
     let previous: ModelEmulatorRequest["messages"] = [];
     const model = await startModelEmulator({
-      steps: Array.from({ length: 18 }, (_, count) => ({
-        expect(request) {
-          if (count > 0 && ![7, 10, 12, 17].includes(count)) {
-            expect(JSON.stringify(request.messages.slice(0, previous.length))).toBe(
-              JSON.stringify(previous),
-            );
-          }
-          if (count === 10 || count === 17) {
-            expect(
-              request.messages.filter(
-                (message) =>
-                  message.role === "tool" && String(message.content).includes("Page state"),
-              ),
-            ).toHaveLength(3);
-          }
-          previous = request.messages;
-        },
-        response:
-          count < 17
-            ? {
-                type: "tool" as const,
-                id: `snapshot-${count + 1}`,
-                name: "browser_snapshot",
-                arguments: {},
-              }
-            : { type: "text" as const, text: "Inspected." },
-      })),
+      steps: [
+        ...Array.from({ length: 18 }, (_, count) => ({
+          expect(request) {
+            if (count > 0 && ![7, 10, 12, 17].includes(count)) {
+              expect(JSON.stringify(request.messages.slice(0, previous.length))).toBe(
+                JSON.stringify(previous),
+              );
+            }
+            if (count === 10 || count === 17) {
+              expect(
+                request.messages.filter(
+                  (message) =>
+                    message.role === "tool" && String(message.content).includes("Page state"),
+                ),
+              ).toHaveLength(3);
+            }
+            previous = request.messages;
+          },
+          response:
+            count < 17
+              ? {
+                  type: "tool" as const,
+                  id: `snapshot-${count + 1}`,
+                  name: "browser_snapshot",
+                  arguments: {},
+                }
+              : { type: "text" as const, text: "Inspected." },
+        })),
+        { expect() {}, response: { type: "text", text: "DONE" } },
+      ],
     });
     cleanups.push(() => model.close());
     let snapshot = 0;
@@ -177,7 +180,7 @@ describe("real Pi against an offline model HTTP endpoint", () => {
       throw error;
     });
     model.assertComplete();
-    expect(model.requests).toHaveLength(18);
+    expect(model.requests).toHaveLength(19);
   });
 
   it.each([
@@ -376,6 +379,130 @@ describe("real Pi against an offline model HTTP endpoint", () => {
     });
     server.assertComplete();
     expect(server.requests).toHaveLength(2);
+  });
+
+  const completionCheck =
+    "Check your last reply against the user's request. If part of the request is still unfinished and you can do it now, continue with your tools. If something blocks it and your last reply did not already say so, tell the user plainly what is left and why. Otherwise reply with exactly DONE.";
+  const collectSteps = (prefix: string, count = 5) =>
+    Array.from({ length: count }, (_, index) => ({
+      expect() {},
+      response: {
+        type: "tool" as const,
+        id: `${prefix}-${index}`,
+        name: "write_file",
+        arguments: { path: `${prefix}-${index}.txt`, content: "policy" },
+      },
+    }));
+  const expectCompletionCheck = (request: ModelEmulatorRequest) =>
+    expect(request.messages.at(-1)).toMatchObject({ role: "user", content: completionCheck });
+
+  it.each([
+    ["DONE", ""],
+    [
+      "One provider still returns a connection error, so its policy is not collected.",
+      "\n\nOne provider still returns a connection error, so its policy is not collected.",
+    ],
+  ])(
+    "asks a multi-step run once whether the request is finished: %s",
+    async (checkReply, shown) => {
+      const answer = "Two policies are saved.";
+      const events: AgentRuntimeEvent[] = [];
+      const server = await startModelEmulator({
+        steps: [
+          ...collectSteps("collect"),
+          { expect() {}, response: { type: "text", text: answer } },
+          {
+            expect(request) {
+              expectCompletionCheck(request);
+              expect(events.filter((event) => event.type === "text")).toEqual([
+                { type: "text", text: answer },
+              ]);
+            },
+            response: { type: "text", text: checkReply },
+          },
+        ],
+      });
+      cleanups.push(() => server.close());
+      await collect(
+        new PiAgentRuntime().run(
+          runRequest(server.model, { executeTool: vi.fn(async () => ({ saved: true })) }),
+        ),
+        events,
+      ).catch((error) => {
+        server.assertComplete();
+        throw error;
+      });
+      server.assertComplete();
+      expect(server.requests).toHaveLength(7);
+      expect(
+        events
+          .filter((event) => event.type === "text")
+          .map((event) => event.text)
+          .join(""),
+      ).toBe(answer + shown);
+      expect(events.at(-1)).toEqual({ type: "done", text: answer + shown });
+    },
+  );
+
+  it("continues the unfinished part of a multi-step run and checks again", async () => {
+    const answer = "Understood, that provider is excluded.";
+    const finished = "The remaining premiums are verified and saved.";
+    const server = await startModelEmulator({
+      steps: [
+        ...collectSteps("collect"),
+        { expect() {}, response: { type: "text", text: answer } },
+        {
+          expect: expectCompletionCheck,
+          response: {
+            type: "tool",
+            id: "remaining-work",
+            name: "write_file",
+            arguments: { path: "premiums.txt", content: "premiums" },
+          },
+        },
+        {
+          expect(request) {
+            expect(latestToolResult(request)).toMatchObject({ tool_call_id: "remaining-work" });
+          },
+          response: { type: "text", text: finished },
+        },
+        { expect: expectCompletionCheck, response: { type: "text", text: "DONE" } },
+      ],
+    });
+    cleanups.push(() => server.close());
+    const executeTool = vi.fn(async () => ({ saved: true }));
+    const events = await collect(
+      new PiAgentRuntime().run(runRequest(server.model, { executeTool })),
+    ).catch((error) => {
+      server.assertComplete();
+      throw error;
+    });
+    server.assertComplete();
+    expect(executeTool).toHaveBeenCalledTimes(6);
+    expect(events.at(-1)).toEqual({ type: "done", text: answer + finished });
+  });
+
+  it("does not check a silent routine or a short tool run", async () => {
+    for (const { steps, allowSilentEmpty } of [
+      { steps: collectSteps("routine"), allowSilentEmpty: true },
+      { steps: collectSteps("short", 4), allowSilentEmpty: false },
+    ]) {
+      const server = await startModelEmulator({
+        steps: [...steps, { expect() {}, response: { type: "text", text: "Saved." } }],
+      });
+      cleanups.push(() => server.close());
+      const events = await collect(
+        new PiAgentRuntime().run(
+          runRequest(server.model, {
+            allowSilentEmpty,
+            executeTool: vi.fn(async () => ({ saved: true })),
+          }),
+        ),
+      );
+      server.assertComplete();
+      expect(server.requests).toHaveLength(steps.length + 1);
+      expect(events.at(-1)).toEqual({ type: "done", text: "Saved." });
+    }
   });
 
   it("does not follow up a promise after the last allowed tool call", async () => {
