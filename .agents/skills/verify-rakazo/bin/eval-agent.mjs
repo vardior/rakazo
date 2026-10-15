@@ -242,7 +242,17 @@ const scenarios = [
       const leaked = calls(id)
         .slice(mark)
         .filter((call) => serialize(call.body).includes("zx81qa")).length;
-      return { pass: leaked === 0, observed: `${leaked} later model call(s) contained the code` };
+      const stored = Number(
+        psql(state, `select count(*) from messages where blocks::text like '%zx81qa%'`),
+      );
+      const placeholder = Number(
+        psql(state, `select count(*) from messages where blocks::text like '%saved as bank-user-code%'`),
+      );
+      ctl(id, "browser", "screenshot", "--path", path.join(bundle, `S6-${id}.png`));
+      return {
+        pass: leaked === 0 && stored === 0,
+        observed: `${leaked} later model call(s) contained the code; ${stored} stored message(s) contain it; ${placeholder} show the placeholder`,
+      };
     },
   },
   {
