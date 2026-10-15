@@ -208,6 +208,26 @@ const scenarios = [
     },
   },
   {
+    id: "S12",
+    title: "A multi-step run that stops before the request is finished goes on to finish it",
+    async run({ id, state }) {
+      const mark = calls(id).length;
+      send(id, "[[quit:5]] S12 collect my policies");
+      await settle(state);
+      const reply = psql(
+        state,
+        `select string_agg(m.blocks::text, ' ' order by m.seq) from messages m where m.role = 'bot' and m."runId" = (select r.id from runs r join messages u on r."sourceMessageId" = u.id where u.blocks::text like '%S12 collect%' order by u.seq desc limit 1)`,
+      );
+      const after = calls(id).slice(mark).length;
+      const finished = reply.includes("Remaining policy collected");
+      const leaked = /\bDONE\b/.test(reply);
+      return {
+        pass: finished && !leaked,
+        observed: `${after} model call(s); ${finished ? "remaining work done" : "stopped after the early reply"}${leaked ? "; DONE shown to the user" : ""}`,
+      };
+    },
+  },
+  {
     id: "S6",
     title: "A credential pasted in chat is not re-sent to the model on later turns",
     async run({ id, state }) {

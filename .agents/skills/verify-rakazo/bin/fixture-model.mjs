@@ -44,6 +44,27 @@ function choosePlan(messages) {
     failuresServed.set(latest, (failuresServed.get(latest) ?? 0) + 1);
     return { kind: fail[2] };
   }
+  const quitIndex = messages.findLastIndex(
+    (message) => message.role === "user" && textOf(message.content).includes("[[quit:"),
+  );
+  if (quitIndex >= 0 && latest.includes("reply with exactly DONE")) {
+    const checks = messages
+      .slice(quitIndex)
+      .filter(
+        (message) =>
+          message.role === "user" && textOf(message.content).includes("reply with exactly DONE"),
+      ).length;
+    if (checks > 1) return { kind: "text", text: "DONE" };
+    if (answeredByTool) return { kind: "text", text: "Remaining policy collected." };
+    return { kind: "tool", name: "shell", args: JSON.stringify({ command: "echo REMAINING" }) };
+  }
+  const quit = latest.match(/\[\[quit:(\d+)\]\]/);
+  if (quit) {
+    const done = messages.slice(latestIndex + 1).filter((message) => message.role === "tool").length;
+    if (done < Number(quit[1]))
+      return { kind: "tool", name: "shell", args: JSON.stringify({ command: `echo STEP_${done}` }) };
+    return { kind: "text", text: "Understood, that provider is excluded." };
+  }
   if (!answeredByTool) {
     const tool = latest.match(/\[\[tool:([a-z_]+)(?::(\{.*?\}))?\]\]/);
     if (tool && !toolsServed.has(tool[0])) {
@@ -163,6 +184,10 @@ const server = createServer(async (request, response) => {
       ],
     });
     emit({}, "tool_calls");
+  } else if (plan.kind === "text") {
+    reply = plan.text;
+    emit({ content: reply });
+    emit({}, "stop");
   } else if (plan.kind === "promise") {
     reply = "I'm continuing with the analysis now and will report back shortly.";
     emit({ content: reply });
