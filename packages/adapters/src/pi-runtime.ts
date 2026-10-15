@@ -102,6 +102,14 @@ const SILENT_ALLOWED_TOOL_CONTINUATION_PROMPT =
 const MAX_UNFINISHED_WORK_CONTINUATIONS = 1;
 const UNFINISHED_WORK_CONTINUATION_PROMPT =
   "You said you would continue. Do that work now with your tools, or tell the user plainly what is blocking you.";
+const MAX_COMPLETION_CHECKS = 2;
+const MIN_TOOL_CALLS_FOR_COMPLETION_CHECK = 5;
+const COMPLETION_CHECK_PROMPT =
+  "Check your last reply against the user's request. If part of the request is still unfinished and you can do it now, continue with your tools. If something blocks it and your last reply did not already say so, tell the user plainly what is left and why. Otherwise reply with exactly DONE.";
+
+function confirmsTaskComplete(text: string): boolean {
+  return /^done\.?$/i.test(text.trim());
+}
 
 export function commitsToUnfinishedWork(text: string): boolean {
   const reply = text.replace(/```[\s\S]*?```|`[^`\n]*`|^>.*$/gm, "").replace(/[‘’]/g, "'");
@@ -118,7 +126,7 @@ export function commitsToUnfinishedWork(text: string): boolean {
   ) {
     return false;
   }
-  return /(?:^|[.!…]\s+|\n)\s*(?:i(?:'m| am)\s+(?:(?:still|now|currently)\s+)?(?:continuing\b|(?:working|back)\s+on\b|(?:retrieving|collecting|gathering|checking|analy[sz]ing|calculating|investigating|reviewing|processing|searching|fetching)\b)|i(?:'ll| will)\s+(?:continue\b|keep\s+working\b|carry\s+on\b|resume\b|report\s+back\b|get\s+back\s+to\s+you\b|(?:retrieve|collect|gather|check|analy[sz]e|calculate|investigate|review|process|search|fetch|finish|work)\b)|working\s+on\s+it\b)/i.test(
+  return /(?:^|[.!…]\s+|\n)\s*(?:(?:yes|ok(?:ay)?|sure|understood|got it|right|next|now|then|and)\b[\s,:—–-]*)?(?:i(?:'m| am)\s+(?:(?:still|now|currently)\s+)?(?:continuing\b|(?:working|back)\s+on\b|(?:going\s+through|looking\s+into)\b|(?:retrieving|collecting|gathering|checking|analy[sz]ing|calculating|investigating|reviewing|processing|searching|fetching|consolidating|compiling|summari[sz]ing|downloading|verifying|finishing|completing|preparing|extracting|comparing)\b)|i(?:'ll| will)\s+(?:(?:now|next|then)\s+)?(?:continue\b|keep\s+working\b|carry\s+on\b|resume\b|report\s+back\b|get\s+back\s+to\s+you\b|(?:go\s+through|look\s+into)\b|(?:retrieve|collect|gather|check|analy[sz]e|calculate|investigate|review|process|search|fetch|finish|work|consolidate|compile|summari[sz]e|flag|download|verify|complete|prepare|extract|compare)\b)|working\s+on\s+it\b)/i.test(
     reply,
   );
 }
@@ -503,6 +511,9 @@ export class PiAgentRuntime implements AgentRuntime {
         let toolActivityShowing = false;
         let silentToolContinuations = 0;
         let unfinishedWorkContinuations = 0;
+        let completionChecks = 0;
+        let completionCheckTurn = false;
+        let confirmedCompleteMessage: unknown;
         let toolWorkPendingFinal = false;
         // Text streamed before this point is tool-turn narration. Only text after
         // it counts as the final reply, including when the completed message omits it.
@@ -531,7 +542,7 @@ export class PiAgentRuntime implements AgentRuntime {
             event.assistantMessageEvent.type === "text_delta"
           ) {
             const delta = event.assistantMessageEvent.delta;
-            if (delta) {
+            if (delta && !completionCheckTurn) {
               if (toolActivityShowing) {
                 // Real text replaces the activity line instead of appending to it.
                 toolActivityShowing = false;
@@ -547,6 +558,25 @@ export class PiAgentRuntime implements AgentRuntime {
               event.message.role === "assistant" ? assistantText(event.message) : "";
             const hasToolCalls = messageHasToolCall(event.message);
             const hasToolResults = event.toolResults.length > 0;
+            const answersCompletionCheck = completionCheckTurn && !hasToolCalls && !hasToolResults;
+            completionCheckTurn = false;
+            let answeredToolWork = false;
+            if (answersCompletionCheck) {
+              if (confirmsTaskComplete(messageText) || !messageText.trim()) {
+                confirmedCompleteMessage = event.message;
+              } else {
+                const addition = `\n\n${messageText.trim()}`;
+                streamed += addition;
+                queue.push({ type: "text", text: addition });
+              }
+            }
+            const canContinue = () =>
+              !host.pausePending &&
+              !signal.aborted &&
+              !providerFailureText(event.message) &&
+              !host.toolCallBudget.exceeded &&
+              (host.toolCallBudget.limit <= 0 ||
+                host.toolCallBudget.count < host.toolCallBudget.limit);
 
             // Text in a turn that also contains a tool call is narration, not a final
             // response. Keep the run alive until a later text-only turn answers the user.
@@ -559,6 +589,7 @@ export class PiAgentRuntime implements AgentRuntime {
               if (messageText.trim() || streamedFinal) {
                 toolWorkPendingFinal = false;
                 silentToolContinuations = 0;
+                answeredToolWork = true;
                 // A provider can put the answer only on the completed message after
                 // narration already filled `streamed`, so message_end will not emit it.
                 if (messageText.trim() && !streamedFinal) {
@@ -585,12 +616,7 @@ export class PiAgentRuntime implements AgentRuntime {
             if (
               !hasToolCalls &&
               !hasToolResults &&
-              !host.pausePending &&
-              !signal.aborted &&
-              !providerFailureText(event.message) &&
-              !host.toolCallBudget.exceeded &&
-              (host.toolCallBudget.limit <= 0 ||
-                host.toolCallBudget.count < host.toolCallBudget.limit) &&
+              canContinue() &&
               unfinishedWorkContinuations < MAX_UNFINISHED_WORK_CONTINUATIONS &&
               commitsToUnfinishedWork(messageText)
             ) {
@@ -604,8 +630,31 @@ export class PiAgentRuntime implements AgentRuntime {
                 });
               }
             }
+            if (
+              answeredToolWork &&
+              toolCalls >= MIN_TOOL_CALLS_FOR_COMPLETION_CHECK &&
+              !request.allowSilentEmpty &&
+              completionChecks < MAX_COMPLETION_CHECKS &&
+              !agent.hasQueuedMessages() &&
+              canContinue()
+            ) {
+              await claimPendingSteering();
+              if (!signal.aborted && !agent.hasQueuedMessages()) {
+                completionChecks += 1;
+                completionCheckTurn = true;
+                agent.followUp({
+                  role: "user",
+                  content: COMPLETION_CHECK_PROMPT,
+                  timestamp: Date.now(),
+                });
+              }
+            }
           }
-          if (event.type === "message_end" && event.message.role === "assistant") {
+          if (
+            event.type === "message_end" &&
+            event.message.role === "assistant" &&
+            !completionCheckTurn
+          ) {
             const text = assistantText(event.message);
             const streamedThisMessage = currentMessageStreamed;
             currentMessageStreamed = "";
@@ -657,7 +706,12 @@ export class PiAgentRuntime implements AgentRuntime {
         if (error && !budgetExceeded) {
           throw new Error(sanitizeProviderError(activeStreamTarget.model.provider, error));
         }
-        if (!budgetExceeded && terminalMessage && !messageHasToolCall(terminalMessage)) {
+        if (
+          !budgetExceeded &&
+          terminalMessage &&
+          terminalMessage !== confirmedCompleteMessage &&
+          !messageHasToolCall(terminalMessage)
+        ) {
           const terminalText = assistantText(terminalMessage);
           const sincePendingFinal = streamed.slice(streamedBeforePendingFinal);
           if (terminalText.trim() && !sincePendingFinal.includes(terminalText)) {
