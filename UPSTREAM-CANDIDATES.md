@@ -26,7 +26,7 @@ Checked for duplicates on 2026-10-13: no open or closed upstream issue covers th
 | 14 | A credential pasted in chat is re-sent to the model on every later turn | bug | reproduced | `fix/pasted-secret-hygiene` 0051b60f, 8ea7b673 | not filed |
 | 15 | A run that loses the model mid-work fails silently | bug | reproduced | `fix/failed-run-visible` f68e5806, fcaeb591, fdb1fb77 | not filed |
 | 16 | Facts a tool returned in one run are gone in the next | design | reproduced | `fix/run-work-log` 7cb30170, c9ca101a | not filed |
-| 17 | A reply that promises more work, or stops partway through a multi-step task, ends the run | bug | reproduced | `fix/promise-follow-through` 201d0af9, 9b8fea7a | not filed |
+| 17 | A reply that promises more work, or stops partway through a multi-step task, ends the run | bug | reproduced | `fix/promise-follow-through` 201d0af9, cb112392 | not filed |
 | 18 | Every model call carries every tool schema | design | reproduced | `fix/tool-search` 39bcc16e, 31128f7b | not filed |
 
 ---
@@ -230,7 +230,7 @@ Scenarios S1–S9 are deterministic fixture drives of the real stack. Before = t
 
 **Seen on the live deployment.** A long collection run ended with an acknowledgement and work left undone, and a later "Yes—I'm continuing now" reply ended its run seconds later; the detector returned false for both.
 
-**Follow-up (9b8fea7a).** The detector accepts short lead-ins ("Yes—", "Next") and more work verbs. A run with five or more tool calls that answers gets one hidden completion check: the model continues with tools, states the blocker, or replies DONE, which is never shown; at most two per run, skipped for silent routines and short runs. Verified live (S12: upstream 0/3, branch 3/3; S5 3/3). Cost: one extra model call at the end of long runs.
+**Follow-up (cb112392).** The detector accepts short lead-ins ("Yes—", "Next") and more work verbs. A run with five or more tool calls that answers gets one hidden completion check: the model continues with tools, states the blocker, or replies DONE, which is never shown; at most two per run, skipped for silent routines and short runs. Verified live (S12: upstream 0/3, branch 3/3; S5 3/3). Cost: one extra model call at the end of long runs.
 
 ## 18. Every model call carries every tool schema
 
