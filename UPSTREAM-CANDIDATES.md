@@ -26,7 +26,7 @@ Checked for duplicates on 2026-10-13: no open or closed upstream issue covers th
 | 14 | A credential pasted in chat is re-sent to the model on every later turn | bug | reproduced | `fix/pasted-secret-hygiene` 0051b60f, 8ea7b673 | not filed |
 | 15 | A run that loses the model mid-work fails silently | bug | reproduced | `fix/failed-run-visible` f68e5806, fcaeb591, fdb1fb77 | not filed |
 | 16 | Facts a tool returned in one run are gone in the next | design | reproduced | `fix/run-work-log` 7cb30170, c9ca101a | not filed |
-| 17 | A reply that promises more work ends the run | bug | reproduced | `fix/promise-follow-through` 201d0af9 | not filed |
+| 17 | A reply that promises more work, or stops partway through a multi-step task, ends the run | bug | reproduced | `fix/promise-follow-through` 201d0af9, 87f74254 | not filed |
 | 18 | Every model call carries every tool schema | design | reproduced | `fix/tool-search` 39bcc16e, 31128f7b | not filed |
 
 ---
@@ -166,6 +166,7 @@ Scenarios S1–S9 are deterministic fixture drives of the real stack. Before = t
 | S3 chat reply to a pending takeover keeps the browser and arrives as its own message | 0/1 | 3/3 |
 | S4 a tool fact from one run is available to the next | false pass | 3/3 |
 | S5 a reply that promises more work is followed by that work | 0/1 | 3/3 |
+| S12 a multi-step run that stops early goes on to finish | 0/3 | 3/3 |
 | S6 a pasted credential is not re-sent on later turns | 0/1 | 3/3 |
 | S7 consecutive runs share a cacheable prefix | first change mid-history | 3/3, first change at the latest turn |
 | S8 tool list identical across every call | 0/1 | 3/3 |
@@ -226,6 +227,10 @@ Scenarios S1–S9 are deterministic fixture drives of the real stack. Before = t
 **Description.** A model replying "I'm continuing with the analysis now and will report back shortly." ends the run; nothing continues.
 
 **Fix.** `fix/promise-follow-through`: a deterministic English detector for explicit first-person commitments allows one internal follow-up turn asking the model to do the work or say what blocks it. Verified live (S5). Risk: heuristic, English only.
+
+**Seen on the live deployment.** A long collection run ended with an acknowledgement and work left undone, and a later "Yes—I'm continuing now" reply ended its run seconds later; the detector returned false for both.
+
+**Follow-up (87f74254).** The detector accepts short lead-ins ("Yes—", "Next") and more work verbs. A run with five or more tool calls that answers gets one hidden completion check: the model continues with tools, states the blocker, or replies DONE, which is never shown; at most two per run, skipped for silent routines and short runs. Verified live (S12: upstream 0/3, branch 3/3; S5 3/3). Cost: one extra model call at the end of long runs.
 
 ## 18. Every model call carries every tool schema
 
