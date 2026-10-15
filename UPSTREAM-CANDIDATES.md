@@ -26,7 +26,7 @@ Checked for duplicates on 2026-10-13: no open or closed upstream issue covers th
 | 14 | A credential pasted in chat is re-sent to the model on every later turn | feature (too opinionated for upstream) | reproduced; S6 main 0/3, branch 3/3 | `fix/pasted-secret-hygiene` 336614cd (rebased on 39a676e2; fork main has the older 8ea7b673 version) | elie222/rakazo#1409 closed by us: new tool, history rewrite and run-wide redaction are a product call for the maintainer |
 | 15 | A run that loses the model mid-work fails silently | bug | reproduced | `fix/failed-run-visible` f68e5806, fcaeb591, fdb1fb77 | not filed |
 | 16 | Facts a tool returned in one run are gone in the next | design | reproduced | `fix/run-work-log` 7cb30170, c9ca101a | not filed |
-| 17 | A reply that promises more work, or stops partway through a multi-step task, ends the run | bug | reproduced | `fix/promise-follow-through` 201d0af9, cb112392 | not filed |
+| 17 | A reply that promises more work, or stops partway through a multi-step task, ends the run | bug | reproduced | `fix/promise-follow-through` 201d0af9, cb112392, 4dbd87f2 (scripted tests answer the completion check) | not filed |
 | 18 | Every model call carries every tool schema | design | reproduced | `fix/tool-search` 39bcc16e, 31128f7b | not filed |
 
 ---
