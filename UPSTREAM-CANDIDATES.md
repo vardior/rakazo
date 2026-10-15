@@ -19,7 +19,7 @@ Checked for duplicates on 2026-10-13: no open or closed upstream issue covers th
 | 7 | Owner messages wait behind routine, webhook and intro runs | design | reproduced | `fix/owner-priority` 4c6efef2, d8f4f455 | not filed |
 | 8 | Routine runs speak by default; silence is opt-in per prompt | design | code-read | `fix/routine-silence-default` c838092b | not filed |
 | 9 | Prior assistant turns are sent to the model as user messages | needs judgment | reproduced | `fix/history-assistant-roles` 4d75e0a6 | ask first |
-| 10 | A chat reply to a pending takeover is folded into another message and the browser is lost | bug | reproduced | `fix/takeover-chat-reply` 483eb848, ecf80ea1 (rebased on upstream 60684ee3) | PR drafted |
+| 10 | A chat reply to a pending takeover is folded into another message and the browser is lost | bug | reproduced | `fix/takeover-chat-reply` 483eb848, ecf80ea1 (rebased on upstream 60684ee3) | PR open: elie222/rakazo#1406 |
 | 11 | A transient provider overload or dropped stream fails the run | bug | reproduced | `fix/transient-model-retry` cd48fb16, d5dcc36d, a0574037 (rebased on upstream 3209a27d) | merged upstream as elie222/rakazo#1392 |
 | 12 | Websites with a third sign-in field cannot be filled from a saved login | gap | reproduced | `fix/login-extra-field` 78cc9c8e, 25d0d0bf | not filed |
 | 13 | Prompt prefix changes between runs, defeating provider prompt caching | design | reproduced | `fix/cache-stable-context` d10daf93, 92ab2653 | not filed |
