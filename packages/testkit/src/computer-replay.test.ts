@@ -21,7 +21,7 @@ describe("computer replay with real Pi and stateful offline computer", () => {
     try {
       const result = await runComputerReplay(sandbox, browser, computer, context);
       expect(result.usedTools).toContain("computer_observe");
-      expect(result.modelRequests).toBe(9);
+      expect(result.modelRequests).toBe(10);
       expect(
         new TextDecoder().decode(await sandbox.readFile(computer, CONTACTS_PATH, context)),
       ).toBe(CONTACTS_CSV);

@@ -46,6 +46,13 @@ export interface ModelEmulatorStep {
   response: ModelEmulatorResponse | ((request: ModelEmulatorRequest) => ModelEmulatorResponse);
 }
 
+export const completionCheckDone: ModelEmulatorStep = {
+  expect(request) {
+    assert.match(String(request.messages.at(-1)?.content), /Otherwise reply with exactly DONE\.$/);
+  },
+  response: { type: "text", text: "DONE" },
+};
+
 /**
  * A loopback-only model protocol fixture. Pi itself and its HTTP/SSE transport
  * stay real. This tests execution, not whether a model can choose these actions.

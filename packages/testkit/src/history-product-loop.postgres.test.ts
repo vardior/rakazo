@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { HISTORY_EVAL_CASES } from "./evals/cases.js";
 import { runTrial } from "./evals/runner.js";
 import type { ModelEmulatorRequest } from "./model-emulator.js";
-import { startModelEmulator } from "./model-emulator.js";
+import { completionCheckDone, startModelEmulator } from "./model-emulator.js";
 
 const enabled = process.env.VERIFY_DATABASE === "1" && Boolean(process.env.DATABASE_URL);
 
@@ -143,6 +143,7 @@ describe.skipIf(!enabled)("product history diagnostic loop", () => {
                 };
           },
         })),
+        completionCheckDone,
       ],
     });
     const dataDir = await mkdtemp(path.join(tmpdir(), "rakazo-product-loop-"));
@@ -194,11 +195,11 @@ describe.skipIf(!enabled)("product history diagnostic loop", () => {
       expect(observations.map((row) => row.segment)).toEqual(
         Array.from({ length: 12 }, (_, i) => i + 1),
       );
-      expect(model.requests).toHaveLength(13);
+      expect(model.requests).toHaveLength(14);
       const diagnosticInputEstimates = inputEstimates.slice(firstDiagnosticEstimate);
       const diagnosticSelectedEstimates = selectedInputEstimates.slice(firstDiagnosticSelection);
-      expect(diagnosticInputEstimates).toHaveLength(13);
-      expect(diagnosticSelectedEstimates).toHaveLength(13);
+      expect(diagnosticInputEstimates).toHaveLength(14);
+      expect(diagnosticSelectedEstimates).toHaveLength(14);
       expect(diagnosticSelectedEstimates.at(-1)!).toBeGreaterThan(
         diagnosticSelectedEstimates[0]! + 32_768,
       );

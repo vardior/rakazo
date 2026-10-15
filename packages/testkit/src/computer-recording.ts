@@ -11,6 +11,7 @@ import {
   browserNavigateFromTool,
   browserSnapshotFromTool,
   builtinAgentTools,
+  MIN_TOOL_CALLS_FOR_COMPLETION_CHECK,
   observationToolResult,
   PiAgentRuntime,
 } from "@rakazo/adapters";
@@ -23,6 +24,7 @@ import {
   EXPORT_RECEIPT_PATH,
 } from "./computer-replay-fixture.js";
 import {
+  completionCheckDone,
   type ModelEmulatorRequest,
   type ModelEmulatorStep,
   startModelEmulator,
@@ -198,7 +200,13 @@ export async function replayContactsRecording(
 ) {
   const record = parseContactsRecording(recording);
   const recorder = createContactsRecorder(sandbox, browser, computer, context);
-  const emulator = await startModelEmulator({ steps: contactsReplaySteps(record) });
+  const steps = contactsReplaySteps(record);
+  const emulator = await startModelEmulator({
+    steps:
+      record.steps.length >= MIN_TOOL_CALLS_FOR_COMPLETION_CHECK
+        ? [...steps, completionCheckDone]
+        : steps,
+  });
   try {
     await executeContactsJourney(emulator.model, recorder, context);
     emulator.assertComplete();

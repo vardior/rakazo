@@ -1,7 +1,7 @@
 import type { AgentRunRequest } from "@rakazo/adapter-kit";
 import { PiAgentRuntime } from "@rakazo/adapters";
 import { describe, expect, it } from "vitest";
-import { startModelEmulator } from "./model-emulator.js";
+import { completionCheckDone, startModelEmulator } from "./model-emulator.js";
 
 describe("structured results through real Pi context selection", () => {
   it("preserves valid history JSON and follows a shortened original-text cursor", async () => {
@@ -113,31 +113,34 @@ describe("structured results through real Pi context selection", () => {
       let calls = 0;
       const decisions: Array<{ droppedMessages: number; truncatedToolResults: number }> = [];
       const server = await startModelEmulator({
-        steps: Array.from({ length: 13 }, (_, index) => ({
-          expect(request) {
-            const serialized = JSON.stringify(request.messages);
-            expect(Buffer.byteLength(serialized)).toBeLessThan(3584);
-            expect(serialized).toContain("Approval remains pending");
-            expect(serialized).not.toContain("obsolete-old-0");
-            if (index > 0) {
-              const tool = request.messages.findLast((message) => message.role === "tool");
-              const result = JSON.parse(String(tool?.content));
-              expect(result.segment).toBe(index - 1);
-              expect(result.nextCursor).toBe(index === 12 ? null : `segment-${index}`);
-              expect(result.approval).toBe("pending");
-              expect(result.diagnostic).toContain("Tool result truncated");
-            }
-          },
-          response:
-            index === 12
-              ? { type: "text" as const, text: "All twelve segments verified; approval pending." }
-              : {
-                  type: "tool" as const,
-                  id: `diagnostic-${index}`,
-                  name: "CRM_READ_DIAGNOSTIC",
-                  arguments: { cursor: index === 0 ? "start" : `segment-${index}` },
-                },
-        })),
+        steps: [
+          ...Array.from({ length: 13 }, (_, index) => ({
+            expect(request) {
+              const serialized = JSON.stringify(request.messages);
+              expect(Buffer.byteLength(serialized)).toBeLessThan(3584);
+              expect(serialized).toContain("Approval remains pending");
+              expect(serialized).not.toContain("obsolete-old-0");
+              if (index > 0) {
+                const tool = request.messages.findLast((message) => message.role === "tool");
+                const result = JSON.parse(String(tool?.content));
+                expect(result.segment).toBe(index - 1);
+                expect(result.nextCursor).toBe(index === 12 ? null : `segment-${index}`);
+                expect(result.approval).toBe("pending");
+                expect(result.diagnostic).toContain("Tool result truncated");
+              }
+            },
+            response:
+              index === 12
+                ? { type: "text" as const, text: "All twelve segments verified; approval pending." }
+                : {
+                    type: "tool" as const,
+                    id: `diagnostic-${index}`,
+                    name: "CRM_READ_DIAGNOSTIC",
+                    arguments: { cursor: index === 0 ? "start" : `segment-${index}` },
+                  },
+          })),
+          completionCheckDone,
+        ],
       });
       try {
         const request: AgentRunRequest = {

@@ -118,7 +118,7 @@ const MAX_UNFINISHED_WORK_CONTINUATIONS = 1;
 const UNFINISHED_WORK_CONTINUATION_PROMPT =
   "You said you would continue. Do that work now with your tools, or tell the user plainly what is blocking you.";
 const MAX_COMPLETION_CHECKS = 2;
-const MIN_TOOL_CALLS_FOR_COMPLETION_CHECK = 5;
+export const MIN_TOOL_CALLS_FOR_COMPLETION_CHECK = 5;
 const COMPLETION_CHECK_PROMPT =
   "Check your last reply against the user's request. If part of the request is still unfinished and you can do it now, continue with your tools. If something blocks it and your last reply did not already say so, tell the user plainly what is left and why. Otherwise reply with exactly DONE.";
 
