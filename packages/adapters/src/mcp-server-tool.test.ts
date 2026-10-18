@@ -89,6 +89,29 @@ describe("parseMcpServerToolArgs", () => {
     });
     expect(tooMany).toBeUndefined();
   });
+
+  it("takes secret env names only for stdio and never treats them as values", () => {
+    const stdio = { name: "RiseUp", transport: "stdio", command: "npx" };
+    expect(
+      parseMcpServerToolArgs({
+        ...stdio,
+        env: { REGION: "us" },
+        secret_env: ["RISEUP_PAT", "RISEUP_PAT", "REGION"],
+      }),
+    ).toMatchObject({ env: { REGION: "us" }, secretEnv: ["RISEUP_PAT"] });
+    expect(parseMcpServerToolArgs({ ...stdio, secret_env: ["fake-token-value"] })).toBeUndefined();
+    expect(
+      parseMcpServerToolArgs({ ...stdio, secret_env: { RISEUP_PAT: "fake-token-value" } }),
+    ).toBeUndefined();
+    expect(
+      parseMcpServerToolArgs({
+        name: "Brex",
+        transport: "streamable_http",
+        endpoint: "https://api.brex.example/mcp",
+        secret_env: ["API_KEY"],
+      }),
+    ).toBeUndefined();
+  });
 });
 
 describe("buildMcpCredentialBlob", () => {

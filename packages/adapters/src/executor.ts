@@ -5547,6 +5547,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     transport: parsed.transport,
                     endpoint: parsed.endpoint ?? null,
                     needsOAuth: oauthLikely,
+                    secretEnv: parsed.secretEnv,
                     status: "pending",
                   },
                 ];

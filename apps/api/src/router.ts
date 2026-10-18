@@ -242,6 +242,7 @@ import {
   revertConnectedMcpApprovals,
 } from "./mcp-approval.js";
 import { buildMcpUpdateMaterial } from "./mcp-material.js";
+import { storeMcpSecretEnv } from "./mcp-secret-env.js";
 import {
   disconnectMemoryProvider,
   persistMemoryProviderConfig,
@@ -4331,6 +4332,7 @@ export function createRouter(deps: RouterDeps) {
           return rows.map(mcpAssignmentDto);
         }),
         approve: authed.mcp.assignments.approve.handler(async ({ context, input }) => {
+          if (input.env) await storeMcpSecretEnv(deps, context.actor, input.serverId, input.env);
           const row = await resolveMcpApprovalCards(
             onboardingDeps,
             context.actor,

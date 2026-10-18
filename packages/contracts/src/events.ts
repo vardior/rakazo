@@ -1,7 +1,7 @@
 import * as z from "zod";
 import { botSecretDestinationSchema } from "./bot-secrets.js";
 import { Id } from "./ids.js";
-import { McpTransportSchema } from "./mcp.js";
+import { McpEnvNameSchema, McpTransportSchema } from "./mcp.js";
 
 export const ProductEventType = z.enum([
   "thread.message.created",
@@ -228,6 +228,7 @@ export const MessageBlock = z.discriminatedUnion("kind", [
     transport: McpTransportSchema,
     endpoint: z.string().nullable(),
     needsOAuth: z.boolean(),
+    secretEnv: z.array(McpEnvNameSchema).max(32).default([]),
     status: z.enum(["pending", "connected", "dismissed"]).default("pending"),
   }),
   z.object({

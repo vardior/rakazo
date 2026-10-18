@@ -1,7 +1,8 @@
 /** Shared logic for the agent-facing add_mcp_server tool. Pure and unit-tested;
  * the executor wires the parsed result into Prisma + the secret store. */
 
-import { McpRemoteEndpointSchema, type McpTransport, McpTransportSchema } from "@rakazo/contracts";
+import type { McpTransport } from "@rakazo/contracts";
+import { McpEnvNameSchema, McpRemoteEndpointSchema, McpTransportSchema } from "@rakazo/contracts";
 import { deriveMcpSlug } from "@rakazo/core";
 import { toStringRecord } from "./memory-provider-factory.js";
 
@@ -19,6 +20,7 @@ export type ParsedMcpServerArgs = {
   command?: string;
   args: string[];
   env: Record<string, string>;
+  secretEnv: string[];
   headers: Record<string, string>;
   secret?: string;
   assignToSelf: boolean;
@@ -63,6 +65,8 @@ export function parseMcpServerToolArgs(
   if (Object.keys(env).length > MAX_ENV_ENTRIES || Object.keys(headers).length > MAX_ENV_ENTRIES) {
     return undefined;
   }
+  const secretEnv = parseSecretEnv(transport, args.secret_env, env);
+  if (!secretEnv) return undefined;
 
   return {
     slug: deriveMcpSlug(name),
@@ -73,11 +77,24 @@ export function parseMcpServerToolArgs(
     command,
     args: toolArgs,
     env,
+    secretEnv,
     headers,
     secret:
       typeof args.secret === "string" && args.secret ? args.secret.slice(0, 16384) : undefined,
     assignToSelf: args.assign_to_self !== false,
   };
+}
+
+function parseSecretEnv(
+  transport: McpTransport,
+  value: unknown,
+  env: Record<string, string>,
+): string[] | undefined {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || transport !== "stdio") return undefined;
+  const names = [...new Set(value)].filter((name) => !(name in env));
+  if (names.length + Object.keys(env).length > MAX_ENV_ENTRIES) return undefined;
+  return names.every((name) => McpEnvNameSchema.safeParse(name).success) ? names : undefined;
 }
 
 /** Serialized credential blob for the encrypted secret store; null when the
