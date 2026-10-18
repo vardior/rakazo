@@ -1,7 +1,7 @@
 import type { MessageBlock } from "@rakazo/contracts";
 import { useEffect, useState } from "react";
 import type { ViewProps } from "react-native";
-import { Alert, StyleSheet, Text, View } from "react-native";
+import { Alert, StyleSheet, Text, TextInput, View } from "react-native";
 import { rpc } from "../lib/api";
 import { useI18n } from "../lib/i18n";
 import { native, useMobileTokens } from "../lib/native";
@@ -15,6 +15,13 @@ const styles = StyleSheet.create({
   badgeText: { fontSize: 12, fontWeight: "600" },
   card: { borderRadius: 18, paddingHorizontal: 16, paddingVertical: 14, gap: 8 },
   description: { fontSize: 13.5, opacity: 0.75 },
+  field: {
+    borderRadius: 12,
+    borderWidth: 1,
+    minHeight: 42,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+  },
   header: { alignItems: "center", flexDirection: "row", gap: 12 },
   headline: { flex: 1, gap: 2 },
   summary: { fontSize: 13.5 },
@@ -39,6 +46,9 @@ export function McpApprovalCard({
   const tokens = useMobileTokens();
   const [localStatus, setLocalStatus] = useState<"pending" | "connected" | "dismissed">("pending");
   const [pendingAction, setPendingAction] = useState<"approve" | "dismiss" | null>(null);
+  const secretEnv = block.secretEnv ?? [];
+  const [envValues, setEnvValues] = useState<Record<string, string>>({});
+  const envMissing = secretEnv.some((key) => !envValues[key]);
   useEffect(() => {
     if (block.status === "connected" || block.status === "dismissed") return;
     setLocalStatus((current) =>
@@ -53,7 +63,13 @@ export function McpApprovalCard({
     setPendingAction(action);
     try {
       if (action === "approve") {
-        await rpc("mcp/assignments/approve", { botId, serverId: block.serverId, threadId });
+        await rpc("mcp/assignments/approve", {
+          botId,
+          serverId: block.serverId,
+          threadId,
+          ...(secretEnv.length > 0 ? { env: envValues } : {}),
+        });
+        setEnvValues({});
       } else {
         await rpc("mcp/assignments/dismiss", { botId, serverId: block.serverId, threadId });
       }
@@ -108,12 +124,28 @@ export function McpApprovalCard({
               ? t("Finish MCP authorization in the web app.")
               : t("Approve this server to let your agent use its tools.")}
           </Text>
+          {secretEnv.map((key) => (
+            <TextInput
+              key={key}
+              accessibilityLabel={key}
+              placeholder={key}
+              placeholderTextColor={tokens.mutedForeground}
+              secureTextEntry
+              autoComplete="off"
+              autoCorrect={false}
+              autoCapitalize="none"
+              editable={pendingAction === null}
+              value={envValues[key] ?? ""}
+              onChangeText={(value) => setEnvValues((current) => ({ ...current, [key]: value }))}
+              style={[styles.field, { borderColor: tokens.border, color: tokens.foreground }]}
+            />
+          ))}
           <View style={styles.actions}>
             {!block.needsOAuth ? (
               <NativeActionButton
                 label={t("Approve")}
                 fill={false}
-                disabled={pendingAction !== null}
+                disabled={pendingAction !== null || envMissing}
                 onPress={() => void submit("approve")}
               />
             ) : null}

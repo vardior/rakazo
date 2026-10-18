@@ -1,7 +1,7 @@
 import { Trans, useLingui } from "@lingui/react/macro";
 import type { MessageBlock } from "@rakazo/contracts";
 import { abortableDelay } from "@rakazo/core";
-import { Button, Dialog, DialogClose, DialogContent, DialogTitle } from "@rakazo/ui-web";
+import { Button, Dialog, DialogClose, DialogContent, DialogTitle, Input } from "@rakazo/ui-web";
 import { X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { BuiCard, SuccessPop } from "../../components/ai/primitives";
@@ -394,6 +394,9 @@ export function McpApprovalCard({
 }) {
   const { t } = useLingui();
   const { name, serverId, transport, endpoint, needsOAuth, status: savedStatus } = block;
+  const secretEnv = block.secretEnv ?? [];
+  const [envValues, setEnvValues] = useState<Record<string, string>>({});
+  const envMissing = secretEnv.some((key) => !envValues[key]);
   const [localStatus, setLocalStatus] = useState<McpApprovalState>("pending");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -425,7 +428,13 @@ export function McpApprovalCard({
           return;
         }
       }
-      await rpc.mcp.assignments.approve({ botId, serverId, threadId });
+      await rpc.mcp.assignments.approve({
+        botId,
+        serverId,
+        threadId,
+        ...(secretEnv.length > 0 ? { env: envValues } : {}),
+      });
+      setEnvValues({});
       setLocalStatus("connected");
     } catch (err) {
       setError(errorText(err, t`Could not approve this server`));
@@ -471,11 +480,27 @@ export function McpApprovalCard({
               ? t`Authorize this server so agents can use its tools. A popup opens.`
               : t`Approve this server to let your agent use its tools.`}
           </p>
+          {secretEnv.map((key) => (
+            <Input
+              key={key}
+              aria-label={key}
+              placeholder={key}
+              type="password"
+              autoComplete="new-password"
+              spellCheck={false}
+              className="mt-2"
+              disabled={state !== "pending" || busy}
+              value={envValues[key] ?? ""}
+              onChange={(event) =>
+                setEnvValues((current) => ({ ...current, [key]: event.target.value }))
+              }
+            />
+          ))}
           {error ? <p className="mt-2 text-xs text-destructive">{error}</p> : null}
           <div className="mt-3 flex gap-2">
             <Button
               className="rounded-full"
-              disabled={state !== "pending" || busy}
+              disabled={state !== "pending" || busy || envMissing}
               onClick={() => void authorize()}
             >
               {state === "connecting" ? t`Connecting…` : needsOAuth ? t`Authorize` : t`Approve`}

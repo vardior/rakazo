@@ -105,6 +105,7 @@ import {
   IntegrationProviderConfigSchema,
   IntegrationSetupStateSchema,
 } from "./integration-settings.js";
+import { McpSecretEnvValuesSchema } from "./mcp.js";
 import { MessageReactionSchema } from "./reactions.js";
 import { RoutineHistorySchema, RoutineRunCursorSchema, RunsListOutputSchema } from "./runs.js";
 import { SearchQueryOutputSchema } from "./search.js";
@@ -692,7 +693,14 @@ export const appContract = {
       list: oc.input(botId).output(z.array(BotMcpServerSchema)),
       all: oc.output(z.array(BotMcpServerSchema)),
       approve: oc
-        .input(z.object({ botId: Id, serverId: Id, threadId: Id.optional() }))
+        .input(
+          z.object({
+            botId: Id,
+            serverId: Id,
+            threadId: Id.optional(),
+            env: McpSecretEnvValuesSchema.optional(),
+          }),
+        )
         .output(BotMcpServerSchema),
       dismiss: oc
         .input(z.object({ botId: Id, serverId: Id, threadId: Id.optional() }))
