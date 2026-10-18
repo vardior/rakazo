@@ -236,8 +236,7 @@ function markdownStyles(palette: ColorTokens) {
 
 async function openSafeLink(url: string) {
   const safeUrl = sanitizeMarkdownUrl(url);
-  if (!safeUrl) return;
-  if (await Linking.canOpenURL(safeUrl)) await Linking.openURL(safeUrl);
+  if (safeUrl) await Linking.openURL(safeUrl).catch(() => undefined);
 }
 
 const OpenLinkContext = createContext<(url: string) => void>(() => undefined);
