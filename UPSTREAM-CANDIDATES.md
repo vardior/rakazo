@@ -28,6 +28,8 @@ Checked for duplicates on 2026-10-13: no open or closed upstream issue covers th
 | 16 | Facts a tool returned in one run are gone in the next | design | reproduced | `fix/run-work-log` 7cb30170, c9ca101a | not filed |
 | 17 | A reply that promises more work, or stops partway through a multi-step task, ends the run | bug | reproduced | `fix/promise-follow-through` 201d0af9, cb112392, 4dbd87f2 (scripted tests answer the completion check) | not filed |
 | 18 | Every model call carries every tool schema | design | reproduced | `fix/tool-search` 39bcc16e, 31128f7b | not filed |
+| 19 | A bot can register a stdio MCP server the deployment cannot run | bug | reproduced | `fix/reject-unrunnable-stdio-mcp` 8bec272f | not filed |
+| 20 | Android chat links whose verified app is hidden from Rakazo do nothing | bug | reproduced | `fix/open-links-without-canopenurl` 0000930a | not filed |
 
 ---
 
@@ -240,3 +242,28 @@ Scenarios S1–S9 are deterministic fixture drives of the real stack. Before = t
 
 **Integration notes.** With 14, `secure_pasted_secret` must be in the core set. With 10, the takeover-hold refusal must run before deferred argument validation. Fork `main` carries both in its merge commit.
 
+---
+
+## 19. A bot can register a stdio MCP server the deployment cannot run
+
+**Description.** On a deployment with `MCP_STDIO_ENABLED` unset, or with the command missing from `MCP_STDIO_ALLOWED_COMMANDS`, `add_mcp_server` accepts a stdio server and reports success. Every later discovery fails with "MCP stdio is disabled", so the bot never gets the server's tools and the user sees no error.
+
+**Steps to reproduce.** With stdio disabled, ask a bot to add an MCP server documented as `npx -y <package>`. Approve the card, then ask the bot to use the server's tools.
+
+**Expected.** The bot is told this deployment cannot run that command and asks for a remote endpoint.
+
+**Actual.** The server is created and approved; discovery fails on every turn and only the worker log says why.
+
+**Fix.** `fix/reject-unrunnable-stdio-mcp`: the composition roots pass the runnable stdio commands (empty when stdio is disabled) to the executor, and `add_mcp_server` refuses any other command before anything is stored. The e2e harness allowlists `echo` for the scripted approval-card fixture. Verified with a unit test (fails without the fix), and with the approval-card e2e passing with `echo` allowed and showing no card with stdio off. The refusal is model-facing only, with no user-facing copy.
+
+## 20. Android chat links whose verified app is hidden from Rakazo do nothing
+
+**Description.** On Android 11+, `Linking.canOpenURL` only sees packages the manifest's `<queries>` expose. When a link's domain is a verified app link of an installed app that Rakazo cannot see, it returns false, so tapping Open in the link confirmation dialog does nothing.
+
+**Steps to reproduce.** On Android, install an app that verifies its domain (a bank or budgeting app), get a bot message linking to that domain, tap the link, then tap Open.
+
+**Expected.** The app or the browser opens the link.
+
+**Actual.** The dialog closes and no intent is sent (logcat shows no `START u0` for the tap, while a link to another domain opens normally).
+
+**Fix.** `fix/open-links-without-canopenurl`: open the sanitized URL directly and ignore a rejection. The markdown tests now mock `canOpenURL` as false, so all five link tests fail if the gate returns. Root cause confirmed from device logcat; the fixed build has not yet run on a device. No user-facing copy.
