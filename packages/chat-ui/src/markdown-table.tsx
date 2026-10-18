@@ -27,6 +27,9 @@ import {
     unchanged table reuse its extraction by content instead of node identity. */
 export const MarkdownTableSourceContext = createContext("");
 
+/** Whether GFM tables render as the interactive data card instead of a plain <table>. */
+export const InteractiveTablesContext = createContext(true);
+
 /**
  * Renders a GFM markdown table as an interactive data card. Extracted plain
  * text drives sorting and export while sanitized React children preserve
@@ -42,6 +45,7 @@ export const MarkdownTable = memo(function MarkdownTable({
   tableProps?: ComponentPropsWithoutRef<"table">;
   children?: ReactNode;
 }) {
+  const interactive = useContext(InteractiveTablesContext);
   const source = useContext(MarkdownTableSourceContext);
   const start = node?.position?.start?.offset;
   const end = node?.position?.end?.offset;
@@ -53,7 +57,7 @@ export const MarkdownTable = memo(function MarkdownTable({
   // the fallback when the parser supplies no position.
   const extracted = useMemo(() => extractTable(node), [sourceKey ?? node]);
   const rendered = useMemo(() => extractRenderedCells(children), [children]);
-  if (!extracted) return <table {...tableProps}>{children}</table>;
+  if (!interactive || !extracted) return <table {...tableProps}>{children}</table>;
   return (
     <TableCard table={extracted} renderedHeaders={rendered.headers} renderedRows={rendered.rows} />
   );

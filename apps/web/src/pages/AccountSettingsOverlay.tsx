@@ -24,6 +24,11 @@ import {
 } from "../lib/composer-enter-to-send-pref";
 import { getActiveUiLocale, setUiLocale } from "../lib/i18n";
 import {
+  getInteractiveTablesEnabled,
+  setInteractiveTablesEnabled,
+  subscribeInteractiveTables,
+} from "../lib/interactive-tables-preference";
+import {
   getRemoteImagesPreference,
   setRemoteImagesPreference,
 } from "../lib/remote-images-preference";
@@ -91,6 +96,12 @@ export function GeneralSettingsPanels({
     () => getRemoteImagesPreference() === "on",
   );
   const loadRemoteImagesId = useId();
+  const interactiveTables = useSyncExternalStore(
+    subscribeInteractiveTables,
+    getInteractiveTablesEnabled,
+    () => false,
+  );
+  const interactiveTablesId = useId();
   const [avatarPending, setAvatarPending] = useState(false);
   const [avatarError, setAvatarError] = useState<string | null>(null);
 
@@ -305,6 +316,21 @@ export function GeneralSettingsPanels({
               className="text-[14px] font-normal text-foreground/75"
             >
               <Trans>Load web images automatically</Trans>
+            </Label>
+          </div>
+          <div className="flex items-start gap-3 pt-4">
+            <Switch
+              id={interactiveTablesId}
+              data-testid="interactive-tables-toggle"
+              className="mt-0.5"
+              checked={interactiveTables}
+              onCheckedChange={setInteractiveTablesEnabled}
+            />
+            <Label
+              htmlFor={interactiveTablesId}
+              className="text-[14px] font-normal text-foreground/75"
+            >
+              <Trans>Interactive tables</Trans>
             </Label>
           </div>
           <ApprovalRulesSettings />

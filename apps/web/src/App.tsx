@@ -1,6 +1,10 @@
 import { Trans, useLingui } from "@lingui/react/macro";
 import type { LinkFavicons } from "@rakazo/chat-ui/web";
-import { LinkFaviconsContext, RemoteImagesContext } from "@rakazo/chat-ui/web";
+import {
+  InteractiveTablesContext,
+  LinkFaviconsContext,
+  RemoteImagesContext,
+} from "@rakazo/chat-ui/web";
 import { LOCAL_SETTINGS_PAGE } from "@rakazo/contracts";
 import { Button, Skeleton } from "@rakazo/ui-web";
 import {
@@ -18,6 +22,10 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { SubscriptionGate } from "./components/SubscriptionGate";
 import { authClient } from "./lib/auth";
 import { getTicketBoardEnabled, subscribeTicketBoardEnabled } from "./lib/bootstrap";
+import {
+  getInteractiveTablesEnabled,
+  subscribeInteractiveTables,
+} from "./lib/interactive-tables-preference";
 import { markAfterPaint, markOnce } from "./lib/performance";
 import { getRemoteImagesEnabled, subscribeRemoteImages } from "./lib/remote-images-preference";
 import { rpc } from "./lib/rpc";
@@ -70,19 +78,26 @@ export function App() {
     getRemoteImagesEnabled,
     () => false,
   );
+  const interactiveTables = useSyncExternalStore(
+    subscribeInteractiveTables,
+    getInteractiveTablesEnabled,
+    () => false,
+  );
   return (
     <RemoteImagesContext.Provider value={loadRemoteImages}>
-      <LinkFaviconsContext.Provider value={linkFavicons}>
-        <ErrorBoundary fallback={<AppFailed />}>
-          {window.location.pathname === SSO_CALLBACK_PATH ? (
-            <SsoCallbackPage />
-          ) : window.location.pathname === LOCAL_SETTINGS_PAGE ? (
-            <LocalSettingsPage />
-          ) : (
-            <SessionApp />
-          )}
-        </ErrorBoundary>
-      </LinkFaviconsContext.Provider>
+      <InteractiveTablesContext.Provider value={interactiveTables}>
+        <LinkFaviconsContext.Provider value={linkFavicons}>
+          <ErrorBoundary fallback={<AppFailed />}>
+            {window.location.pathname === SSO_CALLBACK_PATH ? (
+              <SsoCallbackPage />
+            ) : window.location.pathname === LOCAL_SETTINGS_PAGE ? (
+              <LocalSettingsPage />
+            ) : (
+              <SessionApp />
+            )}
+          </ErrorBoundary>
+        </LinkFaviconsContext.Provider>
+      </InteractiveTablesContext.Provider>
     </RemoteImagesContext.Provider>
   );
 }

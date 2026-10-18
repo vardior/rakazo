@@ -222,6 +222,7 @@ test("rendered markdown selections survive server quote derivation", async ({ pa
 });
 
 test("selecting text inside a table cell quotes the rendered cell", async ({ page }, testInfo) => {
+  await page.addInitScript(() => localStorage.setItem("rakazo.interactiveTables", "on"));
   const stamp = Date.now();
   await signup(page, `quote-cell-${stamp}@rakazo.test`, "password12", "Quote Tester");
   await completeOnboarding(page);
