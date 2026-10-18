@@ -479,3 +479,4 @@ export type { ChatMarkdownProps, LinkFavicons } from "./markdown";
 export { LinkFaviconsContext, RemoteImagesContext } from "./markdown";
 
 export { MarkdownLinkPromptProvider } from "./markdown-link-prompt";
+export { InteractiveTablesContext } from "./markdown-table";

@@ -2596,6 +2596,10 @@ msgstr ""
 msgid "Integrations"
 msgstr "इंटीग्रेशन"
 
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Interactive tables"
+msgstr ""
+
 #: src/pages/RoutineEditor.tsx
 #: src/pages/RoutineSchedule.tsx
 msgid "Interval"

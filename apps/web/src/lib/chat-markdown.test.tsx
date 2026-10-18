@@ -1,4 +1,4 @@
-import { ChatMarkdown, RemoteImagesContext } from "@rakazo/chat-ui/web";
+import { ChatMarkdown, InteractiveTablesContext, RemoteImagesContext } from "@rakazo/chat-ui/web";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
@@ -189,6 +189,19 @@ describe("ChatMarkdown", () => {
     expect(html).toContain('aria-label="Expand table"');
     expect(html).toContain("Alpha");
     expect(html).toContain("2 rows");
+  });
+
+  it("renders GFM tables as a plain table when interactive tables are off", () => {
+    const html = renderToStaticMarkup(
+      <InteractiveTablesContext.Provider value={false}>
+        <ChatMarkdown>{"| Product | Price |\n| --- | ---: |\n| Alpha | 3 |"}</ChatMarkdown>
+      </InteractiveTablesContext.Provider>,
+    );
+
+    expect(html).not.toContain('data-testid="table-card"');
+    expect(html).toContain("<table>");
+    expect(html).toContain("<th>Product</th>");
+    expect(html).toContain("<td>Alpha</td>");
   });
 
   it("right-aligns numeric table columns", () => {
