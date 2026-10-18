@@ -103,6 +103,7 @@ describe("user-visible messages", () => {
           transport: "streamable_http",
           endpoint: "https://example.com/mcp",
           needsOAuth: true,
+          secretEnv: [],
           status: "pending",
         },
       ]),

@@ -1441,7 +1441,7 @@ describe("Pi connector tool dispatch", () => {
     expect(followUp).toEqual(
       expect.objectContaining({
         role: "user",
-        content: expect.stringContaining("staying silent"),
+        content: expect.stringContaining("nothing new worth the user's attention"),
       }),
     );
     expect(followUp.content).toContain("Preserve requests for scheduled reports or summaries");

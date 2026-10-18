@@ -1031,7 +1031,9 @@ describe("self instruction proposals", () => {
     });
     f.setCalls([{ args: { ...args, botId: "other-bot" }, executionId: "call-1" }]);
     await f.run();
-    expect(f.results).toEqual([expect.objectContaining({ error: expect.stringContaining("botId") })]);
+    expect(f.results).toEqual([
+      expect.objectContaining({ error: expect.stringContaining("botId") }),
+    ]);
     expect(f.effects).toEqual([]);
     expect(f.instructionState.instructions).toBe("Draft only");
     expect(f.instructionState.pendingInstructionsRunId).toBeNull();

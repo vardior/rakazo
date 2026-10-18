@@ -244,6 +244,7 @@ const visibleBlocks: Array<[MessageBlock, string]> = [
       transport: "streamable_http",
       endpoint: null,
       needsOAuth: false,
+      secretEnv: [],
       status: "pending",
     },
     "Tools",

@@ -6,6 +6,8 @@ Evidence levels: **reproduced** means driven live with `verify-rakazo`; **observ
 
 Fixes 1–9 live on `fix/*` branches cut from `0394e92c`, one commit each (three for steering); fixes 7 and 10–18 are cut from `932534d7`, with no fork-only files, so `git cherry-pick` onto `upstream/main` gives a PR-ready branch. Fork `main` merges them all and was verified live with `verify-rakazo` (evidence `20261013-213200-steering-fixed`). Each PR still needs the `finalize` skill, and any user-facing copy quoted in its description.
 
+Fork `main` was synced with upstream `b884f436` on 2026-10-18. The fix branches are still cut from their older bases, so cherry-picking one onto current `upstream/main` may need the same adjustments `main` made; each fix's **Upstream sync** note lists them. Fork-adjusted test mocks: new upstream executor tests gained `run.findFirst` and `attempt.count` entries for 7's start gate.
+
 Checked for duplicates on 2026-10-13: no open or closed upstream issue covers these. #910 (free-text replies refused during `waiting_input`) is related but separate.
 
 | # | Title | Kind | Evidence | Fix | Upstream |
@@ -19,8 +21,8 @@ Checked for duplicates on 2026-10-13: no open or closed upstream issue covers th
 | 7 | Owner messages wait behind routine, webhook and intro runs | design | reproduced | `fix/owner-priority` 4c6efef2, d8f4f455 | not filed |
 | 8 | Routine runs speak by default; silence is opt-in per prompt | design | code-read | `fix/routine-silence-default` c838092b | not filed |
 | 9 | Prior assistant turns are sent to the model as user messages | needs judgment | reproduced | `fix/history-assistant-roles` 4d75e0a6 | ask first |
-| 10 | A chat reply to a pending takeover is folded into another message and the browser is lost | bug | reproduced | `fix/takeover-chat-reply` 483eb848, ecf80ea1, 8241c7a7 (rebased on upstream 60684ee3) | merged upstream as elie222/rakazo#1406 |
-| 11 | A transient provider overload or dropped stream fails the run | bug | reproduced | `fix/transient-model-retry` cd48fb16, d5dcc36d, a0574037 (rebased on upstream 3209a27d) | merged upstream as elie222/rakazo#1392 |
+| 10 | A chat reply to a pending takeover is folded into another message and the browser is lost | bug | reproduced | `fix/takeover-chat-reply` 483eb848, ecf80ea1, 8241c7a7 (rebased on upstream 60684ee3) | merged upstream as elie222/rakazo#1406; fork copy dropped in the `b884f436` sync |
+| 11 | A transient provider overload or dropped stream fails the run | bug | reproduced | `fix/transient-model-retry` cd48fb16, d5dcc36d, a0574037 (rebased on upstream 3209a27d) | merged upstream as elie222/rakazo#1392; fork copy dropped in the `b884f436` sync |
 | 12 | Websites with a third sign-in field cannot be filled from a saved login | gap | reproduced | `fix/login-extra-field` 78cc9c8e, 25d0d0bf | not filed |
 | 13 | Prompt prefix changes between runs, defeating provider prompt caching | design | reproduced | `fix/cache-stable-context` d10daf93, 92ab2653 | not filed |
 | 14 | A credential pasted in chat is re-sent to the model on every later turn | feature (too opinionated for upstream) | reproduced; S6 main 0/3, branch 3/3 | `fix/pasted-secret-hygiene` 336614cd (rebased on 39a676e2; fork main has the older 8ea7b673 version) | elie222/rakazo#1409 closed by us: new tool, history rewrite and run-wide redaction are a product call for the maintainer |
@@ -51,6 +53,8 @@ Checked for duplicates on 2026-10-13: no open or closed upstream issue covers th
 **Where.** `packages/adapters/src/pi-runtime.ts` reads durable steering only in `prepareNextTurnWithContext`, which Pi's agent loop calls only when another tool turn follows. After a tool-free turn the loop checks its in-memory steering queue, which is empty, and ends. `packages/db/src/events.ts` `createPendingSteeringRun` then starts the continuation.
 
 **Fix.** `fix/steering` 178f87f4 claims durable steering when a tool-free turn ends and steers it into the same run. A new `reply_complete` runtime event makes the executor publish the already-streamed reply as its own message. With 6 applied, most such steers become interrupts instead; this path covers a steer that lands after the stream ends.
+
+**Upstream sync (`b884f436`).** Upstream #1401 holds mid-turn narration back on short turns. The completed reply is not narration, so `reply_complete` publishes it outside that progress budget (`publishMidTurnNarration(true)`); without this the two replies were merged into one message.
 
 **Version.** 0394e92c
 
@@ -150,6 +154,8 @@ Checked for duplicates on 2026-10-13: no open or closed upstream issue covers th
 
 **Fix.** `fix/routine-silence-default` c838092b rewrites the routine guidance so watch, check and monitor runs stay silent by default while scheduled reports and explicit always-report requests still post. It also treats `webhook` runs like routines (silent empty allowed, narration not promoted, no unread when silent), a wider change than the original issue that upstream should confirm. Not driven live; covered by an offline product journey through the real executor, Pi and webhook endpoint. Whether real models follow the new guidance is unmeasured.
 
+**Upstream sync (`b884f436`).** The silent-allowed tool continuation nudge takes upstream #1473's wording and `[Automated message from Rakazo, not from the user]` label, keeping this fix's default-silence and always-report clauses. `runPromotesMidTurnNarration` keeps excluding `webhook` and also excludes `bot_message`, per upstream #1451. A held webhook steering continuation keeps the message text as its prompt, which upstream now also does for webhooks only (2 covers the rest).
+
 ## 9. Prior assistant turns are sent to the model as user messages
 
 **Description.** `toHistory` in `packages/adapters/src/pi-runtime.ts` maps every history message to role `user`, prefixing the bot's own replies with `Assistant: `. The model cannot structurally tell its earlier replies from the user's messages.
@@ -185,11 +191,15 @@ Scenarios S1–S9 are deterministic fixture drives of the real stack. Before = t
 
 **Fix.** `fix/takeover-chat-reply`: a chat reply releases the takeover hold (opened or unopened) through the same release path the Done button uses, so the resumed run keeps its browser. Verified live (S3, browser tools offered 3/3 against 0/3 on upstream main). The reply still arrives as additional user context; delivering it as its own user turn comes from `fix/steering` (2), not this branch.
 
+**Upstream sync (`b884f436`).** Upstream's #1406 replaces this branch on fork `main`. One behavior differs from the fork copy: upstream releases the hold only for a conversational run the reply steers, so a routine waiting on a takeover keeps its hold and the reply waits as pending steering (7 holds it the same way).
+
 ## 11. A transient provider overload or dropped stream fails the run
 
 **Description.** A single `503 overloaded` or a dropped SSE stream (`terminated`) fails the whole run, even after tool work.
 
 **Fix.** `fix/transient-model-retry`: a configured backup is still tried first, unchanged; once no backup is left, the current model is retried after 2s, 8s and 20s before failing, without replaying completed tool effects. Timeouts are not retried, since they already spent the request budget. Verified live against upstream main (2 × 503, a dropped stream and 6 × 503 recover; 8 × 503 fails with the original error after 33s) and offline (dropped stream then overload after a tool call; backup-chain tests unchanged).
+
+**Upstream sync (`b884f436`).** Upstream's #1392 replaces this branch on fork `main`. The availability classifier now lives in `@rakazo/adapter-kit` `model-errors.ts` with its own tests, so the fork's duplicate classifier and tests were dropped.
 
 ## 12. Websites with a third sign-in field cannot be filled from a saved login
 
@@ -205,6 +215,8 @@ Scenarios S1–S9 are deterministic fixture drives of the real stack. Before = t
 
 **Integration note.** Combined with 9, the window must count conversation turns the same way retention does (`isConversationTurn`); fork `main` carries that one-line adjustment in its merge commit.
 
+**Upstream sync (`b884f436`).** Upstream #1450 widens the exchange limit by one per user message that arrives mid-run. With this fix's anchored window, a wider limit moves the anchor and rewrites the prefix, so `main` passes those messages as `midRunExchanges` and adds them on top of the window anchored on the run-start exchanges. Both the fork's anchored-window test and upstream's mid-run test pass.
+
 ## 14. A credential pasted in chat is re-sent to the model on every later turn
 
 **Description.** If the user pastes a password or code in chat, it stays in history, compaction summaries and memory, and every later model call carries it.
@@ -212,6 +224,8 @@ Scenarios S1–S9 are deterministic fixture drives of the real stack. Before = t
 **Fix.** `fix/pasted-secret-hygiene`: `secure_pasted_secret` moves the value into encrypted storage as a command variable or a login field and replaces every copy in the chat, compaction summary and memory with `[saved as <name>]`; memory tools refuse protected values. Verified live (S6).
 
 **Integration note.** With 12, a pasted value can fill the extra field and a partial login may hold any one field; fork `main` carries this in merge commit 7233d71a and 8fa8aab6.
+
+**Upstream sync (`b884f436`).** Upstream #1472 runs schedule tools sequentially through the same `executionMode` field; `main` merges both into one `SEQUENTIAL_TOOL_NAMES` set instead of a duplicate key that dropped the schedule tools' mode.
 
 ## 15. A run that loses the model mid-work fails silently
 
@@ -235,6 +249,8 @@ Scenarios S1–S9 are deterministic fixture drives of the real stack. Before = t
 
 **Follow-up (cb112392).** The detector accepts short lead-ins ("Yes—", "Next") and more work verbs. A run with five or more tool calls that answers gets one hidden completion check: the model continues with tools, states the blocker, or replies DONE, which is never shown; at most two per run, skipped for silent routines and short runs. Verified live (S12: upstream 0/3, branch 3/3; S5 3/3). Cost: one extra model call at the end of long runs.
 
+**Upstream sync (`b884f436`).** Upstream #1473 labels its own user-role nudges as automated. This fix's follow-up and completion-check prompts are left unlabelled so their behavior is unchanged; labelling them the same way is a candidate change that needs S5 and S12 rerun.
+
 ## 18. Every model call carries every tool schema
 
 **Description.** Each model call sends all 64 built-in tool schemas (about 40,000 characters, roughly 10,000 tokens) plus every connected MCP or integration tool. The bundled local provider's default 32,768-token window cannot fit that with history (issue 4), and selection quality drops as connectors are added. On a live deployment about 20 tools accounted for nearly every call; the largest schema, `schedule_create`, was called twice.
@@ -244,6 +260,8 @@ Scenarios S1–S9 are deterministic fixture drives of the real stack. Before = t
 **Integration notes.** With 14, `secure_pasted_secret` must be in the core set. With 10, the takeover-hold refusal must run before deferred argument validation. Fork `main` carries both in its merge commit.
 
 ---
+
+**Upstream sync (`b884f436`).** Upstream's new tools `generate_image`, `generate_video` (#1441) and `propose_instructions_update` (#1316) are deferred, not core. `use_tool` runs sequentially so a deferred schedule tool keeps #1472's in-order batch. A cross-bot instruction proposal (`botId` argument) is now refused by deferred schema validation before the executor's own check, so upstream's test asserts the refusal names `botId` instead of the executor's message.
 
 ## 19. A bot can register a stdio MCP server the deployment cannot run
 

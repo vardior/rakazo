@@ -1525,7 +1525,9 @@ function toAgentTool(tool: ConnectorTool, host: ToolHost, exposedName: string): 
           host.signal.throwIfAborted();
           const args = (params ?? {}) as Record<string, unknown>;
           recordPiTelemetryContent(span, "pi.agent.tool.arguments", args);
-          let deferredCallError: { error: string; inputSchema?: Record<string, unknown> } | undefined;
+          let deferredCallError:
+            | { error: string; inputSchema?: Record<string, unknown> }
+            | undefined;
           if (tool.name === "use_tool" && host.request.deferredTools?.length) {
             const call = resolveDeferredToolCall(host.request.deferredTools, args);
             if ("error" in call) {
@@ -2773,7 +2775,6 @@ interface FallbackStreamState {
     options: ModelsSimpleStreamOptions | undefined,
   ): AssistantMessageEventStream;
 }
-
 
 function assistantHasPartialOutput(message: AssistantMessage): boolean {
   return message.content.some((part) => {
