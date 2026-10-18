@@ -434,7 +434,7 @@ export function McpApprovalCard({
               aria-label={key}
               placeholder={key}
               type="password"
-              autoComplete="off"
+              autoComplete="new-password"
               spellCheck={false}
               className="mt-2"
               disabled={state !== "pending" || busy}
