@@ -138,8 +138,9 @@ import type {
   SpaceNavigation,
 } from "@rakazo/contracts";
 import {
-  ATTACHMENT_MAX_BYTES,
   appContract,
+  attachmentMaxBytes,
+  attachmentSizeLabel,
   BotSecretAuth,
   ComputerCommandSchema,
   foldComputerCommands,
@@ -185,6 +186,7 @@ import {
   findSpaceMemoryConfig,
   findTicket,
   formatMessagingLinkCode,
+  InstructionConflictError,
   InvalidSpaceNameError,
   IsolationError,
   issueMessagingLinkCode,
@@ -584,6 +586,7 @@ export interface RouterDeps {
   billing?: BillingService;
   env: {
     ticketBoardEnabled?: boolean;
+    maxUploadSizeBytes?: number;
     agentRuntime: string;
     teamChatJudgeProvider?: string;
     teamChatJudgeModel?: string;
@@ -1747,11 +1750,13 @@ export function createRouter(deps: RouterDeps) {
           threadId: existing.thread.id,
           botId: input.botId,
           emitBotUpdated: botProfileLabelsChanged(input),
+          expectedInstructions: input.expectedInstructions,
           data: {
             name: input.name,
             title: input.title,
             description: input.description,
             instructions: input.instructions,
+            selfUpdateInstructions: input.selfUpdateInstructions,
             notifyOnFinish: input.notifyOnFinish,
             color: input.color,
             pinned: input.pinned,
@@ -1771,11 +1776,35 @@ export function createRouter(deps: RouterDeps) {
               ? { disabledBuiltinTools: input.disabledBuiltinTools }
               : {}),
           },
+        }).catch((error) => {
+          if (!(error instanceof InstructionConflictError)) throw error;
+          throw new ORPCError("CONFLICT", { message: error.message });
         });
         const bots = await repos.listBots(context.actor);
         const bot = bots.find((b) => b.id === input.botId);
         if (!bot) throw new IsolationError();
         return bot;
+      }),
+      restoreInstructions: authed.bots.restoreInstructions.handler(async ({ context, input }) => {
+        const bot = await repos.getBot(context.actor, input.botId);
+        if (!bot.thread) throw new IsolationError();
+        try {
+          await commitBotUpdate({
+            prisma: deps.prisma,
+            notify: (threadId, seq) => deps.events.notify(threadId, seq),
+            spaceId: context.actor.spaceId,
+            threadId: bot.thread.id,
+            botId: bot.id,
+            data: {},
+            emitBotUpdated: true,
+            expectedInstructions: input.expectedInstructions,
+            instructionRestore: { versionId: input.versionId, undo: input.undo },
+          });
+        } catch (error) {
+          if (!(error instanceof InstructionConflictError)) throw error;
+          throw new ORPCError("CONFLICT", { message: error.message });
+        }
+        return (await repos.listBots(context.actor)).find((bot) => bot.id === input.botId)!;
       }),
       setComputer: authed.bots.setComputer.handler(async ({ context, input }) => {
         const bot = await repos.getBot(context.actor, input.botId);
@@ -3018,11 +3047,13 @@ export function createRouter(deps: RouterDeps) {
             toComputerRef(computer),
             storedPath,
             computerContext(context.actor, bot.id, "download"),
-            { maxBytes: ATTACHMENT_MAX_BYTES },
+            { maxBytes: attachmentMaxBytes(deps.env) },
           )
           .catch((error: unknown) => {
             if (error instanceof Error && /exceeds|too large/i.test(error.message)) {
-              throw new ORPCError("BAD_REQUEST", { message: "File is too large to download." });
+              throw new ORPCError("BAD_REQUEST", {
+                message: `File exceeds the ${attachmentSizeLabel(attachmentMaxBytes(deps.env))} download limit.`,
+              });
             }
             throw error;
           });
@@ -3041,9 +3072,17 @@ export function createRouter(deps: RouterDeps) {
         if (!hasActiveComputerControl(computer) || computer.controlBotId !== bot.id) {
           throw new ORPCError("FORBIDDEN", { message: "Take control first." });
         }
+        const maxBytes = attachmentMaxBytes(deps.env);
+        if (input.contentBase64.length > Math.ceil(maxBytes / 3) * 4) {
+          throw new ORPCError("BAD_REQUEST", {
+            message: `File exceeds the ${attachmentSizeLabel(maxBytes)} upload limit.`,
+          });
+        }
         const content = Buffer.from(input.contentBase64, "base64");
-        if (content.byteLength > ATTACHMENT_MAX_BYTES) {
-          throw new ORPCError("BAD_REQUEST", { message: "File is too large to upload." });
+        if (content.byteLength > maxBytes) {
+          throw new ORPCError("BAD_REQUEST", {
+            message: `File exceeds the ${attachmentSizeLabel(maxBytes)} upload limit.`,
+          });
         }
         await keepComputerAwake(deps, computer.id);
         let storedPath: string;
@@ -5868,7 +5907,11 @@ export function createRouter(deps: RouterDeps) {
           : (await groupRepos.getGroupTarget(context.actor, input.groupId!)).members[0]?.bot.id;
         if (!botId) throw new IsolationError();
         try {
-          return await createOwnedArtifact(deps, context.actor, { ...input, botId });
+          return await createOwnedArtifact(
+            { ...deps, maxUploadSizeBytes: attachmentMaxBytes(deps.env) },
+            context.actor,
+            { ...input, botId },
+          );
         } catch (error) {
           if (error instanceof AttachmentValidationError) {
             throw new ORPCError("BAD_REQUEST", { message: error.message });
@@ -6347,6 +6390,7 @@ async function meDto(deps: RouterDeps, actor: Actor): Promise<Me> {
   ]);
   return {
     ticketBoardEnabled: deps.env.ticketBoardEnabled === true,
+    maxUploadSizeBytes: attachmentMaxBytes(deps.env),
     userId: actor.userId,
     email: user.email,
     name: user.name,
@@ -6369,7 +6413,7 @@ async function meDto(deps: RouterDeps, actor: Actor): Promise<Me> {
     computerHost: computerHostFor(setup.settings?.computerHost, deps.env.sandboxProvider),
     canChooseHostComputer: actor.isDeploymentOwner && deps.env.sandboxProvider === "docker",
     sandboxProvider: deps.env.sandboxProvider,
-    avatarStyle: user.avatarStyle === "organic" ? "organic" : "robot",
+    avatarStyle: user.avatarStyle === "robot" ? "robot" : "organic",
     billingEnabled: Boolean(deps.billing) && !actor.isDeploymentOwner,
   };
 }
@@ -6465,7 +6509,7 @@ async function releaseComputerControl(
   reason?: ComputerReleaseReason,
   expectedRunId?: string,
 ): Promise<void> {
-  const bot = await createRepos(deps.prisma).getBot(actor, botId);
+  let bot = await createRepos(deps.prisma).getBot(actor, botId);
   if (!bot.computer) {
     if (expectedRunId !== undefined) return;
     throw new IsolationError();
@@ -6486,10 +6530,13 @@ async function releaseComputerControl(
       holder: "bot",
       reason: reason ?? "released",
     });
-    if (!released) return;
-    await enqueueTakeoverContinuation(deps.jobs, released.runId);
-    scheduleComputerSleep(deps.jobs, bot.computer.id);
-    return;
+    if (released) {
+      await enqueueTakeoverContinuation(deps.jobs, released.runId);
+      scheduleComputerSleep(deps.jobs, bot.computer.id);
+      return;
+    }
+    bot = await createRepos(deps.prisma).getBot(actor, botId);
+    if (!bot.computer) return;
   }
   const controlBotId = bot.computer.controlBotId;
   const controlLeaseId = bot.computer.controlLeaseId;

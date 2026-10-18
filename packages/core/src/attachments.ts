@@ -1,7 +1,7 @@
 import type { AttachmentMimeType, MessageBlock, RunWorkRecordEntry } from "@rakazo/contracts";
 import {
-  ATTACHMENT_MAX_BASE64_LENGTH,
   ATTACHMENT_MAX_BYTES,
+  attachmentSizeLabel,
   isAllowedAttachmentMimeType,
   isAttachmentImageMimeType,
 } from "@rakazo/contracts";
@@ -32,11 +32,34 @@ function isWellFormedBase64(value: string): boolean {
   return /^[A-Za-z0-9+/]*$/.test(body);
 }
 
-export function decodeAttachmentBase64(contentBase64: string): Uint8Array {
+export function uploadSizeFromEnv(source: { MAX_UPLOAD_SIZE_MB?: string }): number {
+  const value = source.MAX_UPLOAD_SIZE_MB?.trim();
+  if (!value) return ATTACHMENT_MAX_BYTES;
+  const mb = Number(value);
+  // Leave room for base64 expansion and the JSON envelope in the HTTP body guard.
+  if (
+    !/^\d+$/.test(value) ||
+    !Number.isSafeInteger(mb) ||
+    mb <= 0 ||
+    mb > Math.floor(Number.MAX_SAFE_INTEGER / (2 * 1024 * 1024))
+  ) {
+    throw new Error(
+      "MAX_UPLOAD_SIZE_MB must be a positive integer number of MiB within the safe byte range",
+    );
+  }
+  return mb * 1024 * 1024;
+}
+
+export function decodeAttachmentBase64(
+  contentBase64: string,
+  maxBytes = ATTACHMENT_MAX_BYTES,
+): Uint8Array {
   const normalized = contentBase64.trim();
   if (!normalized) throw new AttachmentValidationError("Attachment content is empty");
-  if (normalized.length > ATTACHMENT_MAX_BASE64_LENGTH) {
-    throw new AttachmentValidationError("Attachment exceeds the 10 MiB limit");
+  if (normalized.length > Math.ceil(maxBytes / 3) * 4) {
+    throw new AttachmentValidationError(
+      `Attachment exceeds the ${attachmentSizeLabel(maxBytes)} limit`,
+    );
   }
   if (normalized.length % 4 !== 0 || !isWellFormedBase64(normalized)) {
     throw new AttachmentValidationError("Attachment content is not valid base64");
@@ -48,8 +71,10 @@ export function decodeAttachmentBase64(contentBase64: string): Uint8Array {
     throw new AttachmentValidationError("Attachment content is not valid base64");
   }
   if (bytes.byteLength === 0) throw new AttachmentValidationError("Attachment content is empty");
-  if (bytes.byteLength > ATTACHMENT_MAX_BYTES) {
-    throw new AttachmentValidationError("Attachment exceeds the 10 MiB limit");
+  if (bytes.byteLength > maxBytes) {
+    throw new AttachmentValidationError(
+      `Attachment exceeds the ${attachmentSizeLabel(maxBytes)} limit`,
+    );
   }
   return new Uint8Array(bytes);
 }
@@ -163,6 +188,12 @@ export function blocksToAgentHistoryText(blocks: MessageBlock[]): string {
       if (block.kind === "handoff") {
         return `[handoff ${block.fromBotId} -> ${block.toBotId}] ${block.text}`;
       }
+      // Without the answer a later turn sees the question as still open and asks it again.
+      if (block.kind === "ask") {
+        if (block.status !== "answered" || !block.answer) return block.text;
+        const choice = block.actions?.find((action) => action.id === block.answer);
+        return `${block.text}\nAnswer: ${choice?.label ?? block.answer}`;
+      }
       if ("text" in block && typeof block.text === "string") return block.text;
       return "";
     })
@@ -177,6 +208,7 @@ export function blocksToAgentHistoryText(blocks: MessageBlock[]): string {
 }
 
 const EXTENSION_MIME_TYPES: Record<string, AttachmentMimeType> = {
+  ".mp4": "video/mp4",
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
   ".png": "image/png",
@@ -194,6 +226,7 @@ const EXTENSION_MIME_TYPES: Record<string, AttachmentMimeType> = {
 };
 
 const MIME_TYPE_EXTENSIONS: Record<AttachmentMimeType, string> = {
+  "video/mp4": ".mp4",
   "image/jpeg": ".jpg",
   "image/png": ".png",
   "image/webp": ".webp",
@@ -251,7 +284,7 @@ export function attachmentsForBot<T extends { botId: string }>(
 export function userTurnMessageForRun<
   T extends { id?: string; role: string; runId?: string | null; blocks: MessageBlock[] },
 >(trigger: string, runId: string, messages: T[], sourceMessageId?: string | null): T | undefined {
-  if (trigger !== "user") return undefined;
+  if (trigger !== "user" && trigger !== "messaging") return undefined;
   return messages.find(
     (message) =>
       message.role === "user" &&

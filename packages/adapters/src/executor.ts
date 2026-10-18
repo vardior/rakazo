@@ -17,6 +17,7 @@ import type {
   ConnectorTool,
   JobPublisher,
   ManagedConnectorProvider,
+  MediaGenerationProvider,
   MemoryStore,
   ModelCredentialFailedState,
   ModelCredentialRetireReason,
@@ -32,8 +33,10 @@ import {
   historyCompactJob,
   MEMORY_REVISION_CONFLICT_ERROR,
   routineJobKey,
+  routineRetryJob,
   routineWakeupJob,
   runContinueJob,
+  TransientModelError,
 } from "@rakazo/adapter-kit";
 import type {
   ComputerCommand,
@@ -118,15 +121,19 @@ import {
   effectiveMemoryScope,
   findDefaultModelCredential,
   findModelCredential,
+  InstructionConflictError,
   InvalidSpaceNameError,
   isTooManyDatabaseConnections,
   loadRunHistoryMessages,
   parseComputerMode,
   readHistory,
   recordUsage,
+  reserveInstructionProposal,
   retireModelCredential,
   SpaceLimitError,
   searchHistory,
+  validateInstructionProposal,
+  writeBotInstructions,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { parse as parseShellCommand } from "shell-quote";
@@ -228,6 +235,7 @@ import { BACKGROUND_WORK_LAUNCH, scheduleComputerSleep } from "./computer-idle.j
 import type { ComputerExecutionLease } from "./computer-lifecycle.js";
 import {
   acquireComputerExecutionLease,
+  acquireDedicatedScreenLeaseFence,
   ComputerBusyError,
   holdComputerExecutionLeaseForTakeover,
   provisionComputer,
@@ -287,6 +295,8 @@ import {
   needsOAuthProbe,
   parseMcpServerToolArgs,
 } from "./mcp-server-tool.js";
+import { createMediaGenerationProvider } from "./media-generation-factory.js";
+import { generateMediaFromTool } from "./media-generation-tools.js";
 import { loadAgentMemoryContext } from "./memory-context.js";
 import type { MemoryProviderResolver } from "./memory-provider-factory.js";
 import { selectMemoryTools } from "./memory-tools.js";
@@ -389,6 +399,8 @@ import {
   attachWorkspaceFileToThread,
   currentTurnFilesInstruction,
   materializeCurrentTurnFiles,
+  materializeRecentThreadFiles,
+  recentThreadFilesInstruction,
 } from "./thread-artifacts.js";
 import type { TicketChangeNotifier } from "./ticket-changes.js";
 import { loadAgentTicketContext } from "./ticket-context.js";
@@ -402,12 +414,15 @@ import {
 import { advanceToolCallLoopGuard, loopGuardStopText } from "./tool-loop.js";
 import { textContentArg } from "./tool-text.js";
 import {
+  assistantTurnSeparator,
   botMessageOutcomeFromMidTurn,
   clampUserProgressMessage,
   extractNarrationText,
   finalBlocksAfterMidTurnProgress,
   isProgressMessageTruncated,
   isUserProgressClientNonce,
+  messageUserMaxLength,
+  midTurnProgressBudgetAllows,
   userProgressClientNonce,
 } from "./user-progress.js";
 import { createWebProvider } from "./web-provider-factory.js";
@@ -2659,6 +2674,10 @@ export function desktopProtectionGuardMessage(reason: string): string {
 /** Cap the roster so a large Space cannot flood the prompt. */
 const BOT_DIRECTORY_LIMIT = 40;
 const YIELDED_RUN_PROGRESS_CHARS = 4_000;
+/** A routine run stopped by a transient model error gets one more try this much later. */
+const ROUTINE_RETRY_DELAY_MS = 12 * 60_000;
+/** The retry is skipped when the routine's next occurrence is this close; that run covers it. */
+const ROUTINE_RETRY_NEXT_RUN_WINDOW_MS = 30 * 60_000;
 const MISSING_MODEL_MESSAGE = "Connect a model in Settings before running bots.";
 
 function runtimeFallbackModel(runtime: AgentRuntime) {
@@ -2666,6 +2685,7 @@ function runtimeFallbackModel(runtime: AgentRuntime) {
 }
 
 export interface ExecutorDeps {
+  maxUploadSizeBytes?: number;
   contextStrategy?: AgentContextStrategy;
   prisma: PrismaClient;
   events: ThreadEvents;
@@ -2693,6 +2713,7 @@ export interface ExecutorDeps {
   listConnectedPluginSlugs?: (userId: string) => Promise<string[]>;
   /** Builtin web_search / web_fetch. Defaults to keyless HTTP when omitted. */
   web?: WebProvider;
+  mediaGeneration?: MediaGenerationProvider;
   /** Page browser (DOM refs) on the bot computer. Defaults to the sandbox live browser when supported. */
   browser?: BrowserProvider;
   secretHttp?: RemoteTransportDependencies;
@@ -3059,6 +3080,7 @@ export function isTerminalModelSetupError(error: unknown): boolean {
 export function createRunExecutor(deps: ExecutorDeps) {
   const contextStrategy = deps.contextStrategy ?? DEFAULT_CONTEXT_STRATEGY;
   const web = deps.web ?? createWebProvider();
+  const mediaGeneration = deps.mediaGeneration ?? createMediaGenerationProvider();
   const browser = deps.browser ?? createBrowserProvider(undefined, { sandbox: deps.sandbox });
   const cloudAgent = deps.cloudAgent;
   const resolveConnectedModel = async (
@@ -3350,6 +3372,176 @@ export function createRunExecutor(deps: ExecutorDeps) {
       }
     },
 
+    async notifyRoutineRetryAttemptsExhausted(runId: string) {
+      const failed = await deps.prisma.run.findUnique({ where: { id: runId } });
+      if (
+        !failed?.routineId ||
+        failed.trigger !== "routine" ||
+        failed.status !== "failed" ||
+        failed.retryOfRunId
+      ) {
+        return;
+      }
+      const supersedingRun = await deps.prisma.run.findFirst({
+        where: {
+          OR: [
+            { retryOfRunId: failed.id },
+            { routineId: failed.routineId, createdAt: { gt: failed.createdAt } },
+          ],
+        },
+        select: { id: true },
+      });
+      if (supersedingRun) return;
+      await notifyFailedRoutineRun(deps, failed, { retryOnFailure: true });
+    },
+
+    async retryRoutineRun(runId: string) {
+      const failed = await deps.prisma.run.findUnique({ where: { id: runId } });
+      if (
+        !failed?.routineId ||
+        failed.trigger !== "routine" ||
+        failed.status !== "failed" ||
+        failed.retryOfRunId
+      ) {
+        return;
+      }
+      const routine = await deps.prisma.routine.findUnique({
+        where: { id: failed.routineId },
+        select: {
+          active: true,
+          crons: true,
+          nextRunAt: true,
+          bot: { select: { archivedAt: true } },
+        },
+      });
+      const laterRun = await deps.prisma.run.findFirst({
+        where: { routineId: failed.routineId, createdAt: { gt: failed.createdAt } },
+        select: { id: true },
+      });
+      if (laterRun) return;
+      const notifyAbandonedRetry = () =>
+        notifyFailedRoutineRun(deps, failed, { retryOnFailure: true });
+      if (routine && routineNextRunIsNear(routine.nextRunAt, Date.now())) {
+        await notifyAbandonedRetry();
+        return;
+      }
+      // A one-time routine turns itself off when it fires, so only a recurring one counts as paused.
+      if (
+        !routine ||
+        (!routine.active && !isOneShotRoutineCrons(routine.crons)) ||
+        routine.bot.archivedAt
+      ) {
+        await notifyAbandonedRetry();
+        return;
+      }
+      const task = await deps.prisma.task.findUnique({
+        where: { id: failed.taskId },
+        select: { prompt: true },
+      });
+      if (!task) {
+        await notifyAbandonedRetry();
+        return;
+      }
+      let retry: { id: string; taskId: string } | null;
+      try {
+        retry = await deps.prisma.$transaction(async (tx) => {
+          // Claim the still-eligible routine without changing its state. One-shot routines
+          // may already be inactive; match their crons so an edit cannot revive a paused routine.
+          const claimed = await tx.routine.updateMany({
+            where: {
+              id: failed.routineId!,
+              active: routine.active,
+              ...(!routine.active ? { crons: { equals: routine.crons } } : {}),
+              bot: { archivedAt: null },
+            },
+            data: { active: routine.active },
+          });
+          if (claimed.count !== 1) return null;
+          const laterRun = await tx.run.findFirst({
+            where: { routineId: failed.routineId!, createdAt: { gt: failed.createdAt } },
+            select: { id: true },
+          });
+          if (laterRun) return null;
+          const targetThread = await tx.thread.findFirst({
+            where: {
+              id: failed.threadId,
+              spaceId: failed.spaceId,
+              OR: [
+                { botId: failed.botId },
+                {
+                  group: {
+                    archivedAt: null,
+                    members: { some: { botId: failed.botId } },
+                  },
+                },
+              ],
+            },
+            select: { id: true },
+          });
+          if (!targetThread) return null;
+          const retryTask = await tx.task.create({
+            data: {
+              spaceId: failed.spaceId,
+              botId: failed.botId,
+              threadId: failed.threadId,
+              userId: failed.userId,
+              prompt: task.prompt,
+              status: "queued",
+            },
+          });
+          return tx.run.create({
+            data: {
+              spaceId: failed.spaceId,
+              botId: failed.botId,
+              threadId: failed.threadId,
+              taskId: retryTask.id,
+              userId: failed.userId,
+              status: "queued",
+              trigger: "routine",
+              routineId: failed.routineId,
+              retryOfRunId: failed.id,
+              ...(failed.modelPinned
+                ? {
+                    modelProvider: failed.modelProvider,
+                    modelId: failed.modelId,
+                    thinkingLevel: failed.thinkingLevel,
+                    modelPinned: true,
+                  }
+                : {}),
+            },
+          });
+        });
+      } catch (error) {
+        // retryOfRunId is unique: another delivery of this job already queued the retry.
+        if (isUniqueViolation(error)) return;
+        throw error;
+      }
+      if (!retry) {
+        const laterRun = await deps.prisma.run.findFirst({
+          where: { routineId: failed.routineId, createdAt: { gt: failed.createdAt } },
+          select: { id: true },
+        });
+        if (laterRun) return;
+        await notifyAbandonedRetry();
+        return;
+      }
+      try {
+        await deps.jobs.enqueue(runContinueJob(retry.id));
+      } catch (error) {
+        // Remove the retry so the job queue's own retry of this job can queue it again.
+        const queuedRetry = retry;
+        await deps.prisma.$transaction(async (tx) => {
+          const removed = await tx.run.deleteMany({
+            where: { id: queuedRetry.id, status: "queued" },
+          });
+          if (removed.count === 1) {
+            await tx.task.deleteMany({ where: { id: queuedRetry.taskId, status: "queued" } });
+          }
+        });
+        throw error;
+      }
+    },
+
     async continueRun(runId: string, workerId: string) {
       const run = await deps.prisma.run.findUnique({ where: { id: runId } });
       if (!run) return;
@@ -3405,7 +3597,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
       if (started.count !== 1) return;
       const leaseTarget = await deps.prisma.bot.findUniqueOrThrow({
         where: { id: run.botId },
-        select: { computerId: true, computerSwitching: true },
+        select: {
+          computerId: true,
+          computerSwitching: true,
+          computer: { select: { scope: true } },
+        },
       });
       if (!leaseTarget.computerId) throw new Error("Bot has no computer");
       if (leaseTarget.computerSwitching) {
@@ -3417,6 +3613,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         return;
       }
       let computerLease: ComputerExecutionLease | null = null;
+      let computerScreenLease: ComputerExecutionLease | null = null;
       try {
         computerLease = await acquireComputerExecutionLease(deps.prisma, {
           computerId: leaseTarget.computerId,
@@ -3424,6 +3621,16 @@ export function createRunExecutor(deps: ExecutorDeps) {
           botId: run.botId,
           resumeHeldLease,
         });
+        computerScreenLease = computerLease;
+        if (!computerScreenLease && leaseTarget.computer?.scope === "dedicated") {
+          computerScreenLease = await acquireDedicatedScreenLeaseFence(deps.prisma, {
+            computerId: leaseTarget.computerId,
+            runId,
+            botId: run.botId,
+            workerId,
+            runFence: fence,
+          });
+        }
       } catch (error) {
         if (!(error instanceof ComputerBusyError)) throw error;
         await requeueComputerRun(deps, runId, workerId, fence, resumeCheckpoint, heldForTakeover);
@@ -3439,30 +3646,40 @@ export function createRunExecutor(deps: ExecutorDeps) {
         });
 
       let leaseValid = true;
+      let runCompleted = false;
       let lastLeaseCheckAt = 0;
       let retainComputerLease = false;
       let runFinished = false;
       let yieldedToConversation = false;
-      let screenRelease: { computer: ComputerRef; context: AdapterContext } | undefined;
+      let screenRelease:
+        | { computer: ComputerRef; context: AdapterContext; keepWarm: boolean }
+        | undefined;
       let runAbortController: AbortController | null = null;
       let detachShutdown: (() => void) | undefined;
       const heartbeat = setInterval(() => {
+        if (runCompleted) return;
         void Promise.all([
           renewRunLease(deps, runId, workerId, fence),
           renewComputerExecutionLease(deps.prisma, computerLease),
         ])
           .then(([runRenewed, computerRenewed]) => {
+            if (runCompleted) return;
             if (!runRenewed || !computerRenewed) {
               leaseValid = false;
               runAbortController?.abort();
             }
           })
           .catch(() => {
+            if (runCompleted) return;
             leaseValid = false;
             runAbortController?.abort();
           });
       }, 60_000);
       heartbeat.unref?.();
+      const stopHeartbeatAfterCompletion = () => {
+        runCompleted = true;
+        clearInterval(heartbeat);
+      };
 
       const runSecrets = [...deps.secrets];
       try {
@@ -3597,7 +3814,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           userId: run.userId,
           botId: bot.id,
           runId,
-          screenLeaseId: screenLeaseIdForRun(computerLease, runId, fence),
+          screenLeaseId: screenLeaseIdForRun(computerScreenLease, runId, fence),
           signal: runAbortController.signal,
           connectedConnections: connectedPlugins.map((row) => ({
             id: row.id,
@@ -3852,34 +4069,51 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const storedComputer = bot.computer;
         const computerMode = parseComputerMode(storedComputer.scope);
         const computer = await provisionComputer(deps, storedComputer.id, context, "bot");
-        screenRelease = { computer, context };
+        screenRelease = { computer, context, keepWarm: false };
         scheduleComputerSleep(deps.jobs, storedComputer.id);
         const workspaceCheckpoint = createRunWorkspaceCheckpoint(() =>
           checkpointRunComputerWorkspace(deps, storedComputer, computer, context),
         );
-        let currentTurnFiles: Awaited<ReturnType<typeof materializeCurrentTurnFiles>>;
+        let currentTurnFiles: Awaited<ReturnType<typeof materializeCurrentTurnFiles>> = [];
+        let recentThreadFiles: Awaited<ReturnType<typeof materializeRecentThreadFiles>> = [];
         try {
-          currentTurnFiles = deps.artifacts
-            ? await materializeCurrentTurnFiles(
-                {
-                  prisma: deps.prisma,
-                  artifacts: deps.artifacts,
-                  sandbox: deps.sandbox,
-                },
-                turnBlocks,
-                {
-                  context,
-                  computer,
-                  computerMode,
-                  markWorkspaceDirty: workspaceCheckpoint.markDirty,
-                },
-              )
-            : [];
+          if (deps.artifacts) {
+            const fileDeps = {
+              prisma: deps.prisma,
+              artifacts: deps.artifacts,
+              maxUploadSizeBytes: deps.maxUploadSizeBytes,
+              sandbox: deps.sandbox,
+            };
+            const fileInput = {
+              context,
+              computer,
+              computerMode,
+              markWorkspaceDirty: workspaceCheckpoint.markDirty,
+            };
+            currentTurnFiles = await materializeCurrentTurnFiles(fileDeps, turnBlocks, fileInput);
+            recentThreadFiles = await materializeRecentThreadFiles(
+              fileDeps,
+              history,
+              historyMessages,
+              {
+                ...fileInput,
+                // Every run copies these again, so they need no checkpoint.
+                markWorkspaceDirty: undefined,
+                skipMessageId: currentTurnMessage?.id,
+                maxTurns: RECENT_TURN_IMAGE_TURNS,
+              },
+            );
+          }
         } catch (error) {
           await workspaceCheckpoint.flush().catch(() => undefined);
           throw error;
         }
-        const attachedFilesPrompt = currentTurnFilesInstruction(currentTurnFiles);
+        const attachedFilesPrompt = [
+          currentTurnFilesInstruction(currentTurnFiles),
+          recentThreadFilesInstruction(recentThreadFiles),
+        ]
+          .filter(Boolean)
+          .join("\n\n");
         const graphical =
           computer.kind !== "desktop" && deps.sandbox.describe().capabilities.graphical;
         // Gate on the model this run will actually call — the pair written to the run row
@@ -3944,6 +4178,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
             groupId: thread.groupId,
             trigger: run.trigger,
             semanticMemoryEnabled,
+            mediaImagesEnabled: Boolean(deps.artifacts && mediaGeneration?.capabilities.images),
+            mediaVideoEnabled: Boolean(deps.artifacts && mediaGeneration?.capabilities.video),
             cloudAgentEnabled: cloudAgentsEnabled(cloudAgent, run.spaceId),
             messagingChannelRun,
             voiceCall,
@@ -4029,10 +4265,18 @@ export function createRunExecutor(deps: ExecutorDeps) {
         // Rehydrate from this run's prior progress rows so a resume after ask/takeover
         // still knows progress was already published (skip hollow finals; status outcome).
         let publishedMidTurnUserMessage = false;
-        // Routine runs discard promoted narration instead of posting it as chat.
+        // Routine, background and bot-to-bot runs discard promoted narration instead of
+        // posting it as chat.
         let discardedMidTurnNarration = false;
+        let lastDiscardedMidTurnNarration = "";
         const midTurnUserTexts: string[] = [];
         let midTurnProgressCount = 0;
+        const turnStartedAtMs = run.startedAt?.getTime() ?? Date.now();
+        // Durable interim messages only on genuinely long turns, capped per run.
+        const canPublishDurableProgress = () =>
+          midTurnProgressBudgetAllows(midTurnProgressCount, Date.now() - turnStartedAtMs);
+        const canPublishDurableNarration = () =>
+          runPromotesMidTurnNarration(run.trigger) && canPublishDurableProgress();
         {
           const priorProgress = await deps.prisma.message.findMany({
             where: { runId: run.id, role: "bot" },
@@ -4092,6 +4336,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
         let pendingProgress = "";
         let lastProgressAt = 0;
         let hasStreamedText = false;
+        // Set by a tool call: the next text starts a new assistant turn and needs a break
+        // from the earlier text that stayed in this reply (held-back narration).
+        let assistantTurnBreakPending = false;
         let toolCallStreak: ToolCallStreak = { key: undefined, count: 0 };
         let lastComputerFrameId: string | undefined;
         let unchangedVisualStreak: UnchangedVisualStreak = { count: 0 };
@@ -4119,19 +4366,33 @@ export function createRunExecutor(deps: ExecutorDeps) {
           pendingProgress = "";
           lastProgressAt = Date.now();
         };
-        const publishMidTurnNarration = async (fitNarration = clampUserProgressMessage) => {
+        const publishMidTurnNarration = async (completedReply = false) => {
           const extracted = extractNarrationText(messageSegments, currentTextSegment);
-          const narration = fitNarration(redactSecrets(extracted.text, runSecrets));
+          const redacted = redactSecrets(extracted.text, runSecrets);
+          const narration = completedReply ? redacted.trim() : clampUserProgressMessage(redacted);
+          const canPublish = completedReply
+            ? runPromotesMidTurnNarration(run.trigger)
+            : canPublishDurableNarration();
+          if (
+            narration &&
+            !canPublish &&
+            !allowSilentEmptyRun &&
+            runPromotesMidTurnNarration(run.trigger)
+          ) {
+            return;
+          }
           messageSegments = extracted.remaining;
           currentTextSegment = "";
           if (!narration) return;
-          assembled = "";
           hasStreamedText = false;
           pendingProgress = "";
-          if (!runPromotesMidTurnNarration(run.trigger)) {
+          if (!canPublish) {
+            assembled = "";
             discardedMidTurnNarration = true;
+            lastDiscardedMidTurnNarration = narration;
             return;
           }
+          assembled = "";
           await publishMessage(
             deps,
             run,
@@ -4191,7 +4452,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           return occurrence;
         };
 
-        const applyTool = async (
+        const dispatchTool = async (
           name: string,
           args: Record<string, unknown>,
           executionId: string,
@@ -4239,6 +4500,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
             return {
               error: "This stage was handed off. End the turn without more tool calls.",
             };
+          }
+          if (name === "propose_instructions_update" && approvalPausePending)
+            return pauseForApproval();
+          if (disabledBuiltinTools.has(name)) {
+            return { error: "This tool is disabled for this bot." };
           }
           if (name === "secure_pasted_secret") {
             const result = await securePastedBotSecret({
@@ -4472,6 +4738,46 @@ export function createRunExecutor(deps: ExecutorDeps) {
               }
             }
           }
+          if (name === "propose_instructions_update") {
+            try {
+              if (run.trigger === "follow_up") {
+                const source = run.sourceMessageId
+                  ? await deps.prisma.message.findUnique({
+                      where: { id: run.sourceMessageId },
+                      select: { role: true },
+                    })
+                  : null;
+                if (source?.role !== "user")
+                  return {
+                    error: "Instruction updates are blocked for externally triggered runs.",
+                  };
+              }
+              if (!nextApprovedTool) validateInstructionProposal(args, run.trigger);
+              else
+                validateInstructionProposal(
+                  { instructions: args.instructions, reason: args.reason },
+                  run.trigger,
+                );
+              if (
+                redactSecrets(String(args.instructions), runSecrets) !== args.instructions ||
+                redactSecrets(String(args.reason), runSecrets) !== args.reason
+              )
+                return { error: "Instruction proposals cannot contain credentials." };
+              const instructionProposalBot = await reserveInstructionProposal(
+                deps.prisma,
+                bot.id,
+                runId,
+              );
+              if (!nextApprovedTool) {
+                args = { ...args, previousInstructions: instructionProposalBot.instructions };
+              }
+            } catch (error) {
+              return {
+                error: error instanceof Error ? error.message : "Invalid instruction proposal.",
+              };
+            }
+          }
+          if (name === "propose_instructions_update") effectRequest = args;
           const viaConnector = !BUILTIN_AGENT_TOOL_NAMES.has(name);
           // Declared effect of the operation this call dispatches (installed API method and
           // flag). Install config is immutable per route resource, so it cannot drift before
@@ -4722,6 +5028,83 @@ export function createRunExecutor(deps: ExecutorDeps) {
           const bypassApproval = gateDecision === "allow" && requiresApprovalByDefault;
           let claimedEffect = false;
 
+          const callMediaTool = async (recoverOnly = false) => {
+            if (
+              (name !== "generate_image" && name !== "generate_video") ||
+              isBackgroundRunTrigger(run.trigger) ||
+              !mediaGeneration ||
+              !deps.artifacts
+            )
+              return { error: "Media generation is unavailable." };
+            const artifacts = deps.artifacts;
+            return generateMediaFromTool({
+              name,
+              args,
+              executionId: applied?.effect.id ?? executionId,
+              recoverOnly,
+              provider: mediaGeneration,
+              prisma: deps.prisma,
+              context,
+              run,
+              attach: (output, fileName, job) =>
+                attachWorkspaceFileToThread(
+                  { prisma: deps.prisma, artifacts, maxUploadSizeBytes: deps.maxUploadSizeBytes },
+                  {
+                    spaceId: run.spaceId,
+                    userId: run.userId,
+                    botId: bot.id,
+                    groupId: thread.groupId ?? undefined,
+                    runId: run.id,
+                    filePath: fileName,
+                    bytes: output.bytes,
+                    operationId: executionId,
+                    onAttached: async (tx, artifact) => {
+                      const checkpointed = await tx.externalEffect.updateMany({
+                        where: {
+                          id: job.id,
+                          status: { not: "media_completed" },
+                          result: { equals: job.result },
+                        },
+                        data: {
+                          status: "media_polling",
+                          result: { ...job.result, artifactId: artifact.id },
+                        },
+                      });
+                      if (!checkpointed.count)
+                        throw new Error("Media attachment was already checkpointed");
+                    },
+                  },
+                ),
+              publish: async (block, jobId, artifactId) => {
+                const committed = await deps.prisma.$transaction(async (tx) => {
+                  // Commit completion with the message so a restarted poll cannot post twice.
+                  const claimed = await tx.externalEffect.updateMany({
+                    where: { id: jobId, status: { not: "media_completed" } },
+                    data: {
+                      status: "media_completed",
+                      result: { provider: mediaGeneration.id, artifactId },
+                    },
+                  });
+                  if (!claimed.count) return null;
+                  return persistMessageInTransaction(tx, run, "bot", [block]);
+                });
+                if (committed)
+                  await deps.events.notify(run.threadId, committed.eventSeq).catch(() => undefined);
+              },
+            });
+          };
+          const settleToolUncertainty = async (effectId: string, toolName: string) => {
+            if (name === "generate_image" || name === "generate_video") {
+              const recovered = await callMediaTool(true);
+              if (
+                recovered !== undefined &&
+                (await completeEffect(deps, effectId, "executing", recovered))
+              )
+                return recovered;
+            }
+            return settleUncertainEffect(deps.prisma, effectId, toolName);
+          };
+
           const claimOrReturn = async (
             from: "approved" | "intended",
           ): Promise<unknown | undefined> => {
@@ -4737,7 +5120,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               const retryGate = resolveDuplicateEffectGate(current, name);
               if (retryGate.action === "return") return retryGate.result;
               if (retryGate.action === "uncertain") {
-                return settleUncertainEffect(deps.prisma, applied!.effect.id, name);
+                return settleToolUncertainty(applied!.effect.id, name);
               }
             }
             throw uncertainEffectError(name);
@@ -4758,9 +5141,15 @@ export function createRunExecutor(deps: ExecutorDeps) {
               leaseOwner: workerId,
               leaseFence: fence,
               blocks: [
-                buildApprovalAskBlock(applied!.effect.id, name, args, runSecrets, {
-                  reviewReason,
-                }),
+                buildApprovalAskBlock(
+                  applied!.effect.id,
+                  name,
+                  name === "propose_instructions_update" ? { ...args, botId: bot.id } : args,
+                  runSecrets,
+                  {
+                    reviewReason,
+                  },
+                ),
               ],
             });
             // pauseRunForInput returning false after a successful renew means the run row no
@@ -4836,7 +5225,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 return requestApproval();
               }
             } else if (gate.action === "uncertain") {
-              return settleUncertainEffect(deps.prisma, applied.effect.id, gate.toolName);
+              return settleToolUncertainty(applied.effect.id, gate.toolName);
             } else if (gate.action === "execute") {
               const early = await claimOrReturn("approved");
               if (early !== undefined) return early;
@@ -5006,6 +5395,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
             await recordComputerAction("write_file", filePath, { bytes: content.byteLength });
             return finish({ ok: true, path: filePath });
           }
+          if (name === "generate_image" || name === "generate_video") {
+            return finish(await callMediaTool());
+          }
           if (name === "render_plot") {
             if (args.charts !== undefined) {
               const query = typeof args.charts === "string" ? args.charts : undefined;
@@ -5026,7 +5418,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   computer,
                   resolveBotWorkspacePath(computerMode, bot.id, dataPath),
                   context,
-                  { maxBytes: ATTACHMENT_MAX_BYTES },
+                  { maxBytes: deps.maxUploadSizeBytes ?? ATTACHMENT_MAX_BYTES },
                 );
                 rows = parsePlotData(dataPath, new TextDecoder().decode(bytes));
               }
@@ -5074,7 +5466,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 attached = true;
               } else if (args.attach !== false && deps.artifacts) {
                 const result = await attachWorkspaceFileToThread(
-                  { prisma: deps.prisma, artifacts: deps.artifacts },
+                  {
+                    prisma: deps.prisma,
+                    artifacts: deps.artifacts,
+                    maxUploadSizeBytes: deps.maxUploadSizeBytes,
+                  },
                   {
                     spaceId: run.spaceId,
                     userId: run.userId,
@@ -5109,7 +5505,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             let bytes: Uint8Array;
             try {
               bytes = await deps.sandbox.readFile(computer, storedPath, context, {
-                maxBytes: ATTACHMENT_MAX_BYTES,
+                maxBytes: deps.maxUploadSizeBytes ?? ATTACHMENT_MAX_BYTES,
               });
             } catch {
               return failAttach("file not found or unreadable");
@@ -5118,7 +5514,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
             if (!mimeType) return failAttach("unsupported attachment type");
             try {
               const attached = await attachWorkspaceFileToThread(
-                { prisma: deps.prisma, artifacts: deps.artifacts },
+                {
+                  prisma: deps.prisma,
+                  artifacts: deps.artifacts,
+                  maxUploadSizeBytes: deps.maxUploadSizeBytes,
+                },
                 {
                   spaceId: run.spaceId,
                   userId: run.userId,
@@ -6199,6 +6599,59 @@ export function createRunExecutor(deps: ExecutorDeps) {
               result: String(args.task ?? "done."),
             };
           }
+          if (name === "propose_instructions_update") {
+            if (nextApprovedTool !== name || !claimedEffect) {
+              return finish({ error: "Instruction updates require human approval." });
+            }
+            const committed = await deps.prisma.$transaction(async (tx) => {
+              await tx.$queryRaw`SELECT id FROM threads WHERE id = ${run.threadId} FOR UPDATE`;
+              await tx.$queryRaw`SELECT id FROM runs WHERE id = ${runId} FOR UPDATE`;
+              const live = await tx.run.findUnique({ where: { id: runId } });
+              if (!mayOpenModelStream(live, workerId, fence, context.signal.aborted)) {
+                throw new Error("Instruction update run is no longer active.");
+              }
+              let undoVersionId: string | null;
+              try {
+                undoVersionId = await writeBotInstructions(tx, {
+                  botId: bot.id,
+                  instructions: String(args.instructions),
+                  reason: String(args.reason),
+                  expectedInstructions: String(args.previousInstructions),
+                  proposalRunId: runId,
+                });
+              } catch (error) {
+                if (!(error instanceof InstructionConflictError)) throw error;
+                await tx.bot.updateMany({
+                  where: { id: bot.id, pendingInstructionsRunId: runId },
+                  data: { pendingInstructionsRunId: null },
+                });
+                return { error: error.message };
+              }
+              if (!undoVersionId) return null;
+              return persistMessageInTransaction(tx, run, "bot", [
+                {
+                  kind: "ask",
+                  text: "Instructions updated",
+                  status: "answered",
+                  instructionUpdate: {
+                    botId: bot.id,
+                    before: redactSecrets(String(args.previousInstructions), runSecrets),
+                    after: String(args.instructions),
+                    reason: String(args.reason),
+                    undoVersionId,
+                  },
+                },
+              ]);
+            });
+            if (committed && "error" in committed) return finish(committed);
+            if (committed)
+              await deps.events
+                .notify(run.threadId, committed.eventSeq)
+                .catch((error) =>
+                  getLogger().error("instruction update realtime notification", error),
+                );
+            return finish({ ok: true });
+          }
           if (name === "create_space") {
             try {
               const space = await createSpaceForMember(deps.prisma, {
@@ -6351,11 +6804,18 @@ export function createRunExecutor(deps: ExecutorDeps) {
           }
           if (name === "message_user") {
             const rawMessage = redactSecrets(String(args.message ?? ""), runSecrets);
-            const text = clampUserProgressMessage(rawMessage);
+            const maxLength = messageUserMaxLength();
+            const text = clampUserProgressMessage(rawMessage, maxLength);
             if (!text) return finish({ error: "message is required" });
-            const truncated = isProgressMessageTruncated(rawMessage);
+            const truncated = isProgressMessageTruncated(rawMessage, maxLength);
             await flushProgress();
             await publishMidTurnNarration();
+            if (!canPublishDurableProgress()) {
+              return finish({
+                ok: true,
+                note: "This update was not posted. The turn is still fresh, or the chat already has enough interim messages for this run. Do not send more progress updates — keep working and put everything in your final reply.",
+              });
+            }
             await publishMessage(
               deps,
               run,
@@ -6371,7 +6831,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 ? {
                     ok: true,
                     truncated: true,
-                    note: "This progress update was cut off at 500 characters and the user only saw the truncated version above — it did NOT deliver your full content. message_user is for short interim beats only, never the final answer. Put your complete answer in your normal final reply instead of relying on this truncated update.",
+                    note: `This progress update was cut off at ${maxLength} characters and the user only saw the truncated version above — it did NOT deliver your full content. message_user is for short interim beats only, never the final answer. Put your complete answer in your normal final reply instead of relying on this truncated update.`,
                   }
                 : { ok: true },
             );
@@ -6527,6 +6987,20 @@ export function createRunExecutor(deps: ExecutorDeps) {
             return finish(result);
           }
           return finish({ error: `unknown tool ${name}` });
+        };
+
+        // Runtimes may dispatch parallel calls; a run can open only one proposal at a time.
+        let instructionProposalInFlight = false;
+        const applyTool = async (...params: Parameters<typeof dispatchTool>) => {
+          if (params[0] !== "propose_instructions_update") return dispatchTool(...params);
+          if (instructionProposalInFlight)
+            return { error: "This bot already has a pending instruction proposal." };
+          instructionProposalInFlight = true;
+          try {
+            return await dispatchTool(...params);
+          } finally {
+            instructionProposalInFlight = false;
+          }
         };
 
         const pluginLine =
@@ -6706,6 +7180,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               botId: bot.id,
               threadId: thread.id,
               runId,
+              routineId: run.routineId,
               sourceMessageId: run.sourceMessageId,
               onUsage: async (event) => {
                 await recordUsage(deps.prisma, event, {
@@ -6851,6 +7326,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                                   {
                                     prisma: deps.prisma,
                                     artifacts: deps.artifacts,
+                                    maxUploadSizeBytes: deps.maxUploadSizeBytes,
                                     sandbox: deps.sandbox,
                                   },
                                   item.blocks,
@@ -6921,6 +7397,15 @@ export function createRunExecutor(deps: ExecutorDeps) {
             }
 
             if (event.type === "text") {
+              if (assistantTurnBreakPending && event.text) {
+                assistantTurnBreakPending = false;
+                const separator = assistantTurnSeparator(assembled, event.text);
+                if (separator) {
+                  assembled += separator;
+                  currentTextSegment += separator;
+                  pendingProgress += progressRedactor.push(separator);
+                }
+              }
               assembled += event.text;
               currentTextSegment += event.text;
               toolCallStreak = { key: undefined, count: 0 };
@@ -6933,7 +7418,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             } else if (event.type === "reply_complete") {
               await flushProgress();
               flushPendingTools();
-              await publishMidTurnNarration((text) => text.trim());
+              await publishMidTurnNarration(true);
             } else if (event.type === "reply_discarded") {
               assembled = assembled.slice(0, assembled.length - currentTextSegment.length);
               currentTextSegment = "";
@@ -7026,7 +7511,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               await publishMidTurnNarration();
               if (assembled.trim()) {
                 const narration = clampUserProgressMessage(redactSecrets(assembled, runSecrets));
-                if (narration && runPromotesMidTurnNarration(run.trigger)) {
+                if (narration && canPublishDurableNarration()) {
                   await publishMessage(
                     deps,
                     run,
@@ -7039,6 +7524,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   publishedMidTurnUserMessage = true;
                 } else if (narration) {
                   discardedMidTurnNarration = true;
+                  lastDiscardedMidTurnNarration = narration;
                 }
                 assembled = "";
                 hasStreamedText = false;
@@ -7085,6 +7571,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               if (event.name !== "message_user") {
                 await publishMidTurnNarration();
               }
+              assistantTurnBreakPending = true;
               await deps.events.append({
                 spaceId: run.spaceId,
                 threadId: thread.id,
@@ -7139,6 +7626,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 });
                 if (!stopped) return;
                 runFinished = true;
+                stopHeartbeatAfterCompletion();
                 if (stopped.continuationRunId) {
                   await deps.jobs
                     .enqueue(runContinueJob(stopped.continuationRunId))
@@ -7303,6 +7791,17 @@ export function createRunExecutor(deps: ExecutorDeps) {
           terminalCheckpointComplete = true;
           await Promise.all(completionAudits);
 
+          // Save the last held-back narration as the final reply so outcome delivery
+          // can be retried from the persisted message after completion.
+          if (
+            run.trigger === "bot_message" &&
+            !allowSilentEmptyRun &&
+            !assembled.trim() &&
+            lastDiscardedMidTurnNarration
+          ) {
+            assembled = lastDiscardedMidTurnNarration;
+            currentTextSegment = assembled;
+          }
           flushPendingTools();
           const silentReply = runAllowsSilentEmpty(run.trigger)
             ? stripNoResponseReply(assembled, messageSegments)
@@ -7367,6 +7866,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
           });
           if (!completed) return;
           runFinished = true;
+          stopHeartbeatAfterCompletion();
+          if (screenRelease) screenRelease.keepWarm = true;
           if (completed.continuationRunId) {
             await deps.jobs
               .enqueue(runContinueJob(completed.continuationRunId))
@@ -7463,7 +7964,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
               { forceUnread: true },
             ).catch((returnError) => getLogger().error("bot message failure return", returnError));
           }
-          if (runSendsFinishNotification(run.trigger) && !failed.continuationRunId) {
+          const retrying =
+            !failed.continuationRunId && (await scheduleRoutineRetry(deps, run, error));
+          if (runSendsFinishNotification(run.trigger) && !failed.continuationRunId && !retrying) {
             await notifyRun(deps, run, {
               kind: "failure",
               title: `${bot.name} failed`,
@@ -7571,8 +8074,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
         clearInterval(heartbeat);
         if (!retainComputerLease) {
           if (screenRelease) {
+            const releaseContext = screenRelease.keepWarm
+              ? { ...screenRelease.context, keepScreenWarm: true }
+              : screenRelease.context;
             await deps.sandbox
-              .releaseScreen?.(screenRelease.computer, screenRelease.context)
+              .releaseScreen?.(screenRelease.computer, releaseContext)
               .catch(() => undefined);
           }
           await releaseComputerExecutionLease(deps.prisma, computerLease).catch(() => undefined);
@@ -7675,7 +8181,12 @@ export async function runNotificationsEnabled(
 async function runNotice(
   prisma: PrismaClient,
   run: { spaceId: string; userId: string; botId: string; threadId: string },
+  routineId?: string | null,
 ): Promise<{ enabled: boolean; groupId: string | null }> {
+  // A routine carries its own notify setting, which decides on its failures.
+  const routine = routineId
+    ? await prisma.routine.findUnique({ where: { id: routineId }, select: { notify: true } })
+    : null;
   const source = await prisma.run.findFirst({
     where: {
       botId: run.botId,
@@ -7690,22 +8201,105 @@ async function runNotice(
   });
   if (!source) return { enabled: false, groupId: null };
   return {
-    enabled: Boolean(source.thread.groupId || source.bot.notifyOnFinish),
+    enabled: routine ? routine.notify : Boolean(source.thread.groupId || source.bot.notifyOnFinish),
     groupId: source.thread.groupId,
   };
 }
 
+function routineNextRunIsNear(nextRunAt: Date | null, retryAt: number): boolean {
+  return Boolean(nextRunAt && nextRunAt.getTime() - retryAt <= ROUTINE_RETRY_NEXT_RUN_WINDOW_MS);
+}
+
+/**
+ * Queue one later retry of a routine run that a transient model error stopped before it posted
+ * a message or called a tool. Effects are keyed to their run, so a retry after either could
+ * repeat them. Returns whether a retry was queued.
+ */
+async function scheduleRoutineRetry(
+  deps: ExecutorDeps,
+  run: {
+    id: string;
+    threadId: string;
+    trigger: string;
+    routineId: string | null;
+    retryOfRunId: string | null;
+  },
+  error: unknown,
+): Promise<boolean> {
+  if (
+    run.trigger !== "routine" ||
+    !run.routineId ||
+    run.retryOfRunId ||
+    !(error instanceof TransientModelError)
+  ) {
+    return false;
+  }
+  try {
+    const retryAt = Date.now() + ROUTINE_RETRY_DELAY_MS;
+    const [routine, toolCalls, botMessages] = await Promise.all([
+      deps.prisma.routine.findUnique({
+        where: { id: run.routineId },
+        select: { nextRunAt: true },
+      }),
+      deps.prisma.event.count({ where: { runId: run.id, type: "agent.tool.called" } }),
+      deps.prisma.message.count({
+        where: { threadId: run.threadId, runId: run.id, role: "bot" },
+      }),
+    ]);
+    if (!routine || toolCalls > 0 || botMessages > 0) return false;
+    if (routineNextRunIsNear(routine.nextRunAt, retryAt)) return false;
+    await deps.jobs.enqueue(routineRetryJob(run.id, new Date(retryAt)));
+    return true;
+  } catch (scheduleError) {
+    getLogger().error("routine retry schedule", scheduleError);
+    return false;
+  }
+}
+
+async function notifyFailedRoutineRun(
+  deps: ExecutorDeps,
+  failed: Parameters<typeof notifyRun>[1] & { error: string | null },
+  options: { retryOnFailure?: boolean } = {},
+) {
+  const bot = await deps.prisma.bot.findUniqueOrThrow({
+    where: { id: failed.botId },
+    select: { name: true },
+  });
+  await notifyRun(
+    deps,
+    failed,
+    {
+      kind: "failure",
+      title: `${bot.name} failed`,
+      body: (failed.error ?? "").slice(0, 180),
+      botId: failed.botId,
+      threadId: failed.threadId,
+    },
+    options,
+  );
+}
+
 async function notifyRun(
   deps: ExecutorDeps,
-  run: { spaceId: string; userId: string; botId: string; threadId: string; trigger: string },
+  run: {
+    spaceId: string;
+    userId: string;
+    botId: string;
+    threadId: string;
+    trigger: string;
+    routineId?: string | null;
+  },
   message: NotificationMessage,
+  options: { retryOnFailure?: boolean } = {},
 ) {
   if (
     !deps.notifications ||
     (isBackgroundRunTrigger(run.trigger) && message.kind !== "help" && message.kind !== "takeover")
   )
     return;
-  const notice = await runNotice(deps.prisma, run).catch((error) => {
+  const routineId = message.kind === "failure" ? run.routineId : null;
+  const notice = await runNotice(deps.prisma, run, routineId).catch((error) => {
+    if (options.retryOnFailure) throw error;
     getLogger().error("notification preference lookup", error);
     return null;
   });
@@ -7720,6 +8314,7 @@ async function notifyRun(
       signal: new AbortController().signal,
     })
     .catch((error) => {
+      if (options.retryOnFailure) throw error;
       getLogger().error("run notification", error);
     });
 }
@@ -7756,6 +8351,8 @@ export function selectBuiltinToolsForRun(options: {
   trigger: string;
   semanticMemoryEnabled: boolean;
   cloudAgentEnabled?: boolean;
+  mediaImagesEnabled?: boolean;
+  mediaVideoEnabled?: boolean;
   messagingChannelRun: boolean;
   /** Hanging up is only offered to a turn the caller spoke on a live call. */
   voiceCall?: boolean;
@@ -7781,10 +8378,19 @@ export function selectBuiltinToolsForRun(options: {
   ).filter(
     (tool) =>
       !disabled.has(tool.name) &&
+      (options.mediaImagesEnabled || tool.name !== "generate_image") &&
+      (options.mediaVideoEnabled || tool.name !== "generate_video") &&
       (options.ticketBoardEnabled ||
         (tool.name !== "board_tickets" && !tool.name.startsWith("ticket_"))) &&
       (!isBackgroundRunTrigger(options.trigger) ||
-        !["message_user", "message_bot", "handoff_to_bot", "message_agent"].includes(tool.name)) &&
+        ![
+          "message_user",
+          "message_bot",
+          "handoff_to_bot",
+          "message_agent",
+          "generate_image",
+          "generate_video",
+        ].includes(tool.name)) &&
       (options.voiceCall || tool.name !== "end_call") &&
       (options.historyRetrievalEnabled ||
         !["search_history", "read_history"].includes(tool.name)) &&
@@ -8187,8 +8793,9 @@ export function mayOpenModelStream(
 
 export { isExactNoResponse, NO_RESPONSE, stripNoResponseReply };
 
-export const LONG_WORK_PROGRESS_GUIDANCE =
-  "During long work, send a few short progress updates with message_user so the user can see what you are doing. Keep them brief and high-signal (a sentence or two, not a dump). Do not narrate every tool call. Thinking stays private. message_user is capped at 500 characters and will be silently cut off if you exceed it \u2014 never put your final answer, a report, or any long-form deliverable in it. Always put the complete final answer in your normal reply, never split across message_user calls, and never assume a message_user update already delivered your content.";
+export function longWorkProgressGuidance(maxLength = messageUserMaxLength()): string {
+  return `Send progress updates only when the work will take minutes — long computer tasks or multi-step jobs — never for quick replies and never to announce that you are starting. Even then send at most a few brief updates (a sentence or two each), not one per tool call, and do not narrate routine steps. Thinking stays private. message_user is capped at ${maxLength} characters and will be silently cut off if you exceed it \u2014 never put your final answer, a report, or any long-form deliverable in it. Always put the complete final answer in your normal reply, never split across message_user calls, and never assume a message_user update already delivered your content.`;
+}
 
 export const ROUTINE_SILENT_REPLY_GUIDANCE = `For a routine or webhook run whose purpose is to watch, check, or monitor, stay silent by default when there is nothing new worth the user's attention. Also honor an explicit request to stay silent when there is nothing to report. Always deliver requested scheduled reports or summaries, and always report or confirm each run when the routine's prompt explicitly asks for it. When staying silent, the entire final assistant reply must be exactly ${NO_RESPONSE} — no surrounding prose, no variants, no progress updates, no all-clear, and no meta note that you are staying silent. Do not call message_user unless you have something to report.`;
 
@@ -8196,8 +8803,13 @@ export function runAllowsSilentEmpty(trigger: string): boolean {
   return trigger === "routine" || trigger === "webhook" || isBackgroundRunTrigger(trigger);
 }
 
+/**
+ * Whether text written before a tool call is saved as a chat bubble. Bot-to-bot runs
+ * discard it: nobody reads those threads live, and the receiver's final reply is what
+ * goes back to the sender.
+ */
 export function runPromotesMidTurnNarration(trigger: string): boolean {
-  return !runAllowsSilentEmpty(trigger);
+  return trigger !== "bot_message" && !runAllowsSilentEmpty(trigger);
 }
 
 export const TICKET_SILENT_REPLY_GUIDANCE =
@@ -8205,9 +8817,7 @@ export const TICKET_SILENT_REPLY_GUIDANCE =
 
 export function runReplyGuidance(trigger: string): string {
   if (isBackgroundRunTrigger(trigger)) return TICKET_SILENT_REPLY_GUIDANCE;
-  return runAllowsSilentEmpty(trigger)
-    ? ROUTINE_SILENT_REPLY_GUIDANCE
-    : LONG_WORK_PROGRESS_GUIDANCE;
+  return runAllowsSilentEmpty(trigger) ? ROUTINE_SILENT_REPLY_GUIDANCE : longWorkProgressGuidance();
 }
 
 function replyGuidanceForOfferedTools(
@@ -8215,7 +8825,7 @@ function replyGuidanceForOfferedTools(
   disabled?: ReadonlySet<string>,
 ): string | undefined {
   if (!disabled?.has("message_user")) return guidance;
-  if (guidance === LONG_WORK_PROGRESS_GUIDANCE) {
+  if (guidance === longWorkProgressGuidance()) {
     return "Always put the complete final answer in your normal reply.";
   }
   if (guidance === ROUTINE_SILENT_REPLY_GUIDANCE) {

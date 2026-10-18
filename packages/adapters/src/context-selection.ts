@@ -27,6 +27,7 @@ export interface ContextSelectionOptions {
   /** Never drop current request, steering, approvals or authoritative constraints. */
   protectedIndexes?: readonly number[];
   recentExchanges?: number;
+  midRunExchanges?: number;
   cacheWarmth?: "likely-warm" | "likely-cold" | "unknown";
   /** Keep tool protocol intact while shortening oversized result bodies. */
   truncateToolResults?: boolean;
@@ -430,6 +431,7 @@ export function selectContext<T extends ContextMessage>(
   const keepPrefix =
     options.strategy === "current" ||
     (options.strategy === "cache-aware" && options.cacheWarmth === "likely-warm");
+  const midRunExchanges = options.midRunExchanges ?? 0;
   const exchangeLimit = keepPrefix
     ? Number.POSITIVE_INFINITY
     : recentExchangeWindow(
@@ -437,9 +439,9 @@ export function selectContext<T extends ContextMessage>(
           (count, group) =>
             count + Number(group.indexes.some((index) => isConversationTurn(messages[index]!))),
           0,
-        ),
+        ) - midRunExchanges,
         Math.max(1, options.recentExchanges ?? 8),
-      ).count;
+      ).count + midRunExchanges;
   let exchanges = 0;
   // Retain a contiguous recent suffix. Skip no holes inside a retained tool group.
   for (let index = groups.length - 1; index >= 0; index--) {

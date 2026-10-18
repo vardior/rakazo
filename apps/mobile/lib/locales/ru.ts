@@ -1,4 +1,33 @@
 export const RU_MESSAGES: Record<string, string> = {
+  "Your OpenRouter": "Ваш OpenRouter",
+  "Your OpenAI": "Ваш OpenAI",
+  "Your Anthropic": "Ваш Anthropic",
+  "Your model provider": "Ваш поставщик моделей",
+  "The model provider returned an error.": "Поставщик моделей вернул ошибку.",
+  "{provider} is rate limiting requests. Try again shortly.":
+    "{provider} ограничивает частоту запросов. Повторите попытку чуть позже.",
+  "{summary} Resets {date}.": "{summary} Сброс: {date}.",
+  "{provider} rejected the API key. Check your connection settings.":
+    "{provider} отклонил API-ключ. Проверьте настройки подключения.",
+  "{provider} could not find the requested model.": "{provider} не смог найти запрошенную модель.",
+  "{provider} took too long to respond. Try again.":
+    "{provider} не ответил вовремя. Повторите попытку.",
+  "{provider} key hit its limit.": "{provider}: достигнут лимит ключа.",
+  "{provider} key hit its daily limit.": "{provider}: достигнут дневной лимит ключа.",
+  "{provider} key hit its weekly limit.": "{provider}: достигнут недельный лимит ключа.",
+  "{provider} key hit its monthly limit.": "{provider}: достигнут месячный лимит ключа.",
+  "{provider} reached its credit limit.": "{provider}: достигнут кредитный лимит.",
+  "{provider} reached its daily credit limit.": "{provider}: достигнут дневной кредитный лимит.",
+  "{provider} reached its weekly credit limit.": "{provider}: достигнут недельный кредитный лимит.",
+  "{provider} reached its monthly credit limit.": "{provider}: достигнут месячный кредитный лимит.",
+  "{provider} reached its spending limit.": "{provider}: достигнут лимит расходов.",
+  "{provider} reached its daily spending limit.": "{provider}: достигнут дневной лимит расходов.",
+  "{provider} reached its weekly spending limit.":
+    "{provider}: достигнут недельный лимит расходов.",
+  "{provider} reached its monthly spending limit.":
+    "{provider}: достигнут месячный лимит расходов.",
+  Details: "Подробности",
+
   "Couldn't refresh — showing the last loaded messages.":
     "Не удалось обновить — показаны последние загруженные сообщения.",
   "Try Again": "Повторить",
@@ -10,7 +39,7 @@ export const RU_MESSAGES: Record<string, string> = {
   Yesterday: "Вчера",
   You: "Вы",
   "Original message unavailable": "Исходное сообщение недоступно",
-  "No archived bots": "Нет архивированных ботов",
+  "No archived chats": "Нет архивированных чатов",
   "Recover computer?": "Восстановить компьютер?",
   "Recreate a computer that is not working.": "Пересоздать неработающий компьютер.",
   "Restore the last saved workspace.": "Восстановить последнее сохранённое рабочее пространство.",
@@ -136,7 +165,7 @@ export const RU_MESSAGES: Record<string, string> = {
     "Архивирование сохраняет всё и обратимо. Удаление необратимо.",
   "Collapse {name}": "Свернуть {name}",
   "Expand {name}": "Развернуть {name}",
-  "Archived bots": "Архивированные боты",
+  Archived: "В архиве",
   "Archived. Chat, memory, and files kept.": "В архиве. Чат, память и файлы сохраняются.",
   Asleep: "Спит",
   Attach: "Вложение",
@@ -266,6 +295,7 @@ export const RU_MESSAGES: Record<string, string> = {
   "Could not reach that server": "Не удалось связаться с этим сервером",
   "Could not reach this model server": "Не удалось связаться с сервером этой модели.",
   "Could not remove source": "Не удалось удалить источник",
+  "Could not load chats": "Не удалось загрузить чаты",
   "Could not restore bot": "Не удалось восстановить бота",
   "Could not revoke connection": "Не удалось отменить соединение",
   "Could not save bot": "Не удалось сохранить бота",
@@ -376,6 +406,8 @@ export const RU_MESSAGES: Record<string, string> = {
   "Loading preview…": "Загрузка предварительного просмотра…",
   "Loading tools…": "Загрузка инструментов…",
   "Loading…": "Загрузка…",
+  "Mark as Read": "Отметить как прочитанное",
+  "Mark as Unread": "Отметить как непрочитанное",
   "Long press to pin or move to a section":
     "Нажмите и удерживайте, чтобы закрепить или переместить в раздел",
   "Long press to pin, move, or silence notifications":
@@ -664,7 +696,7 @@ export const RU_MESSAGES: Record<string, string> = {
   "Settings: Usage": "Настройки: Использование",
   "Skipped {items}": "Пропущен {items}",
   "{name} (max {count} attachments)": "{name} (не более {count} вложений)",
-  "{name} (over 10 MiB)": "{name} (более 10 МБ)",
+  "{name} (over {limit})": "{name} (более {limit})",
   "{name} (permission denied)": "{name} (в разрешении отказано)",
   "{name} (unsupported type)": "{name} (неподдерживаемый тип)",
   "Saved {name} locally": "{name} сохранен локально.",
@@ -793,4 +825,16 @@ export const RU_MESSAGES: Record<string, string> = {
   "Sign in to your existing account to link SSO":
     "Войдите в существующий аккаунт, чтобы привязать SSO",
   "SSO is temporarily unavailable. Try again.": "SSO временно недоступен. Попробуйте снова.",
+  Applied: "Применено",
+  Apply: "Применить",
+  Dismissed: "Отклонено",
+  Edit: "Изменить",
+  "Instruction history": "История инструкций",
+  Instructions: "Инструкции",
+  "Instructions updated": "Инструкции обновлены",
+  "Let this bot update its own instructions": "Разрешить этому боту обновлять свои инструкции",
+  Restored: "Восстановлено",
+  Undo: "Отменить",
+  "Update instructions?": "Обновить инструкции?",
+  "Could not restore instructions": "Не удалось восстановить инструкции",
 };

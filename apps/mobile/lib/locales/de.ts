@@ -1,4 +1,35 @@
 export const DE_MESSAGES: Record<string, string> = {
+  "Your OpenRouter": "Dein OpenRouter",
+  "Your OpenAI": "Dein OpenAI",
+  "Your Anthropic": "Dein Anthropic",
+  "Your model provider": "Dein Modellanbieter",
+  "The model provider returned an error.": "Der Modellanbieter hat einen Fehler zurückgegeben.",
+  "{provider} is rate limiting requests. Try again shortly.":
+    "{provider} begrenzt die Anfragerate. Versuche es gleich noch einmal.",
+  "{summary} Resets {date}.": "{summary} Zurücksetzung am {date}.",
+  "{provider} rejected the API key. Check your connection settings.":
+    "{provider} hat den API-Schlüssel abgelehnt. Prüfe deine Verbindungseinstellungen.",
+  "{provider} could not find the requested model.":
+    "{provider} konnte das angeforderte Modell nicht finden.",
+  "{provider} took too long to respond. Try again.":
+    "{provider} hat zu lange zum Antworten gebraucht. Versuche es erneut.",
+  "{provider} key hit its limit.": "{provider}: Schlüssellimit erreicht.",
+  "{provider} key hit its daily limit.": "{provider}: tägliches Schlüssellimit erreicht.",
+  "{provider} key hit its weekly limit.": "{provider}: wöchentliches Schlüssellimit erreicht.",
+  "{provider} key hit its monthly limit.": "{provider}: monatliches Schlüssellimit erreicht.",
+  "{provider} reached its credit limit.": "{provider}: Guthabenlimit erreicht.",
+  "{provider} reached its daily credit limit.": "{provider}: tägliches Guthabenlimit erreicht.",
+  "{provider} reached its weekly credit limit.":
+    "{provider}: wöchentliches Guthabenlimit erreicht.",
+  "{provider} reached its monthly credit limit.": "{provider}: monatliches Guthabenlimit erreicht.",
+  "{provider} reached its spending limit.": "{provider}: Ausgabenlimit erreicht.",
+  "{provider} reached its daily spending limit.": "{provider}: tägliches Ausgabenlimit erreicht.",
+  "{provider} reached its weekly spending limit.":
+    "{provider}: wöchentliches Ausgabenlimit erreicht.",
+  "{provider} reached its monthly spending limit.":
+    "{provider}: monatliches Ausgabenlimit erreicht.",
+  Details: "Details",
+
   "Couldn't refresh — showing the last loaded messages.":
     "Aktualisierung fehlgeschlagen – die zuletzt geladenen Nachrichten werden angezeigt.",
   "Try Again": "Erneut versuchen",
@@ -10,7 +41,7 @@ export const DE_MESSAGES: Record<string, string> = {
   Yesterday: "Gestern",
   You: "Du",
   "Original message unavailable": "Originalnachricht nicht verfügbar",
-  "No archived bots": "Keine archivierten Bots",
+  "No archived chats": "Keine archivierten Chats",
   "Recover computer?": "Computer wiederherstellen?",
   "Recreate a computer that is not working.":
     "Einen nicht funktionierenden Computer neu erstellen.",
@@ -82,6 +113,8 @@ export const DE_MESSAGES: Record<string, string> = {
   "Delete space": "Space löschen",
   "Delete {name}?": "{name} löschen?",
   "Expand {name}": "{name} ausklappen",
+  "Mark as Read": "Als gelesen markieren",
+  "Mark as Unread": "Als ungelesen markieren",
   "Long press to pin or move to a section":
     "Lange drücken, um anzuheften oder in einen Abschnitt zu verschieben",
   "Long press to pin, move, or silence notifications":
@@ -226,7 +259,7 @@ export const DE_MESSAGES: Record<string, string> = {
   "{count} agents working": "{count} Agents arbeiten",
   "{from} messaged {to}": "{from} hat {to} geschrieben",
   "{name} (max {count} attachments)": "{name} (max. {count} Anhänge)",
-  "{name} (over 10 MiB)": "{name} (über 10 MiB)",
+  "{name} (over {limit})": "{name} (über {limit})",
   "{name} (permission denied)": "{name} (Zugriff verweigert)",
   "{name} (unsupported type)": "{name} (Dateityp nicht unterstützt)",
   "{name} is working": "{name} arbeitet",
@@ -497,12 +530,13 @@ export const DE_MESSAGES: Record<string, string> = {
   "Agent messages": "Agent-Nachrichten",
   "Alerts from routines": "Meldungen von Routinen",
   Appearance: "Erscheinungsbild",
-  "Archived bots": "Archivierte Bots",
+  Archived: "Archiviert",
   "Avatar style": "Avatar-Stil",
   Avatars: "Avatare",
   Cancel: "Abbrechen",
   "Could not change language": "Sprache konnte nicht geändert werden",
   "Could not delete account": "Konto konnte nicht gelöscht werden",
+  "Could not load chats": "Chats konnten nicht geladen werden",
   "Could not restore bot": "Bot konnte nicht wiederhergestellt werden",
   "Could not sign out": "Abmeldung fehlgeschlagen",
   "Could not update notifications": "Benachrichtigungen konnten nicht aktualisiert werden",
@@ -790,4 +824,17 @@ export const DE_MESSAGES: Record<string, string> = {
     "Melde dich bei deinem bestehenden Konto an, um SSO zu verknüpfen",
   "SSO is temporarily unavailable. Try again.":
     "SSO ist vorübergehend nicht verfügbar. Versuche es erneut.",
+  Applied: "Angewendet",
+  Apply: "Anwenden",
+  Dismissed: "Verworfen",
+  Edit: "Bearbeiten",
+  "Instruction history": "Anweisungsverlauf",
+  Instructions: "Anweisungen",
+  "Instructions updated": "Anweisungen aktualisiert",
+  "Let this bot update its own instructions":
+    "Dieser Bot darf seine eigenen Anweisungen aktualisieren",
+  Restored: "Wiederhergestellt",
+  Undo: "Rückgängig",
+  "Update instructions?": "Anweisungen aktualisieren?",
+  "Could not restore instructions": "Anweisungen konnten nicht wiederhergestellt werden",
 };

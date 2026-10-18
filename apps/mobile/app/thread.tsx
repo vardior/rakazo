@@ -9,6 +9,7 @@ import type {
   Routine,
 } from "@rakazo/contracts";
 import {
+  attachmentMaxBytes,
   canReactToThreadMessage,
   canRetryFailedRun,
   MESSAGE_REACTIONS,
@@ -31,6 +32,7 @@ import {
   isSecretAskBlock,
   latestAnswerableAskMessageId,
   leaveThreadWindow,
+  normalizeRunError,
   openThreadWindow,
   plainTextFromMarkdown,
   projectMessageReactions,
@@ -88,8 +90,17 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
-import { KeyboardAvoidingView, useKeyboardState } from "react-native-keyboard-controller";
-import { useReducedMotion } from "react-native-reanimated";
+import {
+  KeyboardAvoidingView,
+  KeyboardController,
+  useKeyboardHandler,
+} from "react-native-keyboard-controller";
+import Animated, {
+  interpolate,
+  useAnimatedStyle,
+  useReducedMotion,
+  useSharedValue,
+} from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AppConnectCard } from "../components/AppConnectCard";
 import { AskActions } from "../components/AskActions";
@@ -102,6 +113,7 @@ import { FailedSendBubble } from "../components/failed-send-bubble";
 import { GlassSurface } from "../components/glass-surface";
 import type { ImageArtifactPreviewTarget } from "../components/image-artifact-viewer";
 import { InlineImageAttachment } from "../components/inline-image-attachment";
+import { InstructionUndo } from "../components/instruction-undo";
 import { McpApprovalCard } from "../components/McpApprovalCard";
 import type { MarkdownArtifactPreviewTarget } from "../components/markdown-artifact-preview";
 import { MarkdownArtifactPreview } from "../components/markdown-artifact-preview";
@@ -115,9 +127,11 @@ import { SelectTextSheet } from "../components/select-text-sheet";
 import { trailingHeaderOptions } from "../components/sheet-header";
 import type { ThreadComposerHandle } from "../components/thread-composer";
 import { ThreadComposer } from "../components/thread-composer";
+import { createThreadHeaderStyles } from "../components/thread-header-styles";
 import { TimeSeparator } from "../components/time-separator";
 import { VoiceChatCard } from "../components/VoiceChatCard";
 import { WorkingIndicator } from "../components/WorkingIndicator";
+import { readableGutter } from "../lib/adaptive-layout";
 import type {
   MobileBot,
   MobileGroup,
@@ -150,7 +164,6 @@ import { confirmDeleteBot, restoreArchivedBot } from "../lib/bot-lifecycle";
 import { retainUnchangedBotRoster } from "../lib/bot-roster";
 import { findSwitchTarget, ringOnArrival, takeRingOnArrival } from "../lib/bot-switch";
 import { setCallProviderTranscribe, startCall, useCallSession } from "../lib/call-session";
-import { transparentColor } from "../lib/color";
 import { loadDeviceVoiceEnabled } from "../lib/device-voice";
 import { available as dictationAvailable } from "../lib/dictation";
 import { cancelFocusPrompt, focusPromptThreadActive } from "../lib/focus-prompt";
@@ -174,7 +187,7 @@ import {
   truncateQuoteExcerpt,
 } from "../lib/message-presentation";
 import { native, useMobileTokens, useResolvedAppearance, useThemedStyles } from "../lib/native";
-import { iosAtLeast } from "../lib/native-controls";
+import { HEADER_TITLE_MAX_FONT_SCALE, iosAtLeast } from "../lib/native-controls";
 import {
   threadRouteSpaceOnFocus,
   threadSpaceRequest,
@@ -250,7 +263,8 @@ function formatApprovalAnswer(
 function formatAttachmentSkip(item: { name: string; reason: string }): string {
   const name = item.name === "camera" ? t("Camera") : item.name;
   if (item.reason === "permission denied") return t("{name} (permission denied)", { name });
-  if (item.reason === "over 10 MiB") return t("{name} (over 10 MiB)", { name });
+  if (item.reason.startsWith("over "))
+    return t("{name} (over {limit})", { name, limit: item.reason.slice(5) });
   if (item.reason === "unsupported type") return t("{name} (unsupported type)", { name });
   const maxMatch = /^max (\d+) attachments$/.exec(item.reason);
   if (maxMatch) {
@@ -396,59 +410,6 @@ export default function ThreadRoute() {
   );
 }
 
-function createThreadHeaderStyles() {
-  const tokens = mobileTokens();
-  const transparentBackground = transparentColor(tokens.background);
-  return StyleSheet.create({
-    titleCapsule: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 10,
-      maxWidth: 220,
-      paddingVertical: 4,
-      paddingStart: 6,
-      paddingEnd: 14,
-      borderRadius: 999,
-    },
-    titleCapsuleFill: {
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: tokens.border,
-      backgroundColor: tokens.card,
-    },
-    title: {
-      color: tokens.foreground,
-      fontSize: 18,
-      fontWeight: "600",
-    },
-    circleButton: {
-      flex: 1,
-      borderRadius: 999,
-      alignItems: "center",
-      justifyContent: "center",
-    },
-    composerFill: {
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: tokens.border,
-      backgroundColor: tokens.card,
-    },
-    headerFade: {
-      position: "absolute",
-      top: 0,
-      left: 0,
-      right: 0,
-      experimental_backgroundImage: `linear-gradient(to bottom, ${tokens.background} 0%, ${tokens.background} 58%, ${transparentBackground} 100%)`,
-    },
-    composerFade: {
-      position: "absolute",
-      bottom: "100%",
-      left: -20,
-      right: -20,
-      height: 24,
-      experimental_backgroundImage: `linear-gradient(to top, ${tokens.background} 0%, ${transparentBackground} 100%)`,
-    },
-  });
-}
-
 function Thread({ sessionEpoch }: { sessionEpoch: number }) {
   const colorScheme = useResolvedAppearance();
   const tokens = mobileTokens();
@@ -461,7 +422,35 @@ function Thread({ sessionEpoch }: { sessionEpoch: number }) {
   const nativeHeaderHeight = useHeaderHeight();
   const headerHeight = iosAtLeast(26) ? nativeHeaderHeight : 0;
   const insets = useSafeAreaInsets();
-  const keyboardVisible = useKeyboardState((state) => state.isVisible);
+  // An unfolded or tablet window keeps messages and the composer in a centred reading column.
+  const columnInset = readableGutter(windowWidth, Math.max(insets.left, insets.right));
+  const columnWidth = windowWidth - columnInset * 2;
+  // Frame by frame, including a swipe that drags the keyboard down.
+  const keyboardProgress = useSharedValue(KeyboardController.isVisible() ? 1 : 0);
+  useKeyboardHandler(
+    {
+      onMove: (event) => {
+        "worklet";
+        keyboardProgress.value = event.progress;
+      },
+      onInteractive: (event) => {
+        "worklet";
+        keyboardProgress.value = event.progress;
+      },
+      onEnd: (event) => {
+        "worklet";
+        keyboardProgress.value = event.progress;
+      },
+    },
+    [],
+  );
+  const composerRestingPadding =
+    Platform.OS === "ios" ? insets.bottom : Math.max(insets.bottom + 12, 24);
+  // Hands the composer from the keyboard to the safe area as the keyboard moves, so it never
+  // dips into the home indicator and then jumps back up.
+  const composerKeyboardPadding = useAnimatedStyle(() => ({
+    paddingBottom: interpolate(keyboardProgress.value, [0, 1], [composerRestingPadding, 12]),
+  }));
   const {
     botId,
     groupId,
@@ -565,6 +554,19 @@ function Thread({ sessionEpoch }: { sessionEpoch: number }) {
   }, [streamResponses]);
   const activeThreadId = useRef<string | undefined>(undefined);
   const [agentSkills, setAgentSkills] = useState<AgentSkillCatalogEntry[]>([]);
+  const [uploadConfig, setUploadConfig] = useState<{ maxUploadSizeBytes?: number }>();
+  useEffect(() => {
+    let cancelled = false;
+    void rpc<{ maxUploadSizeBytes?: number }>("me")
+      .then((me) => {
+        if (!cancelled) setUploadConfig(me);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const [mentionBots, setMentionBots] = useState<MobileBot[]>([]);
   // The call outlives renders, so its switch check reads the newest bot list from here.
   const mentionBotsRef = useRef<MobileBot[]>([]);
@@ -860,7 +862,11 @@ function Thread({ sessionEpoch }: { sessionEpoch: number }) {
                 muted={currentBot.notifyOnFinish === false}
               />
             ) : null}
-            <Text numberOfLines={1} style={styles.title}>
+            <Text
+              maxFontSizeMultiplier={HEADER_TITLE_MAX_FONT_SCALE}
+              numberOfLines={1}
+              style={styles.title}
+            >
               {displayName || t("Thread")}
             </Text>
           </GlassSurface>
@@ -1876,14 +1882,17 @@ function Thread({ sessionEpoch }: { sessionEpoch: number }) {
   }
 
   async function addAttachments(
-    picker: (existingCount: number) => Promise<{
+    picker: (
+      existingCount: number,
+      maxBytes: number,
+    ) => Promise<{
       attachments: PickedAttachment[];
       skipped: Array<{ name: string; reason: string }>;
     }>,
   ) {
     const targetKey = groupId ?? botId;
     if (!targetKey) return;
-    const result = await picker(activePendingAttachments.length);
+    const result = await picker(activePendingAttachments.length, attachmentMaxBytes(uploadConfig));
     if ((groupId ?? botId) !== targetKey) return;
     if (result.attachments.length) {
       setPendingAttachments((current) => [
@@ -2148,7 +2157,7 @@ function Thread({ sessionEpoch }: { sessionEpoch: number }) {
           activityColor={activityBot?.color}
           activityStatus={activityStatus}
           inGroup={inGroup}
-          windowWidth={windowWidth}
+          columnWidth={columnWidth}
           enableJump={options?.enableJump ?? false}
           index={options?.index ?? 0}
         />
@@ -2173,7 +2182,7 @@ function Thread({ sessionEpoch }: { sessionEpoch: number }) {
       answerableAskMessageId,
       highlightedMessageId,
       separatorIds,
-      windowWidth,
+      columnWidth,
       t,
       locale,
     ],
@@ -2284,7 +2293,11 @@ function Thread({ sessionEpoch }: { sessionEpoch: number }) {
       behavior="height"
       // Android lays out the screen below the opaque native navigation header.
       keyboardVerticalOffset={Platform.OS === "android" ? nativeHeaderHeight : 0}
-      style={{ flex: 1, backgroundColor: tokens.background, paddingHorizontal: 20 }}
+      style={{
+        flex: 1,
+        backgroundColor: tokens.background,
+        paddingHorizontal: 20 + columnInset,
+      }}
     >
       {error ? (
         <Text style={{ color: tokens.mutedForeground, marginTop: headerHeight + 28 }}>
@@ -2292,9 +2305,17 @@ function Thread({ sessionEpoch }: { sessionEpoch: number }) {
         </Text>
       ) : null}
       {runError ? (
-        <Text style={{ color: tokens.destructive, marginTop: error ? 12 : headerHeight + 28 }}>
-          {runError}
-        </Text>
+        <View style={{ marginTop: error ? 12 : headerHeight + 28 }}>
+          <Text style={{ color: tokens.mutedForeground, fontSize: 13.5 }}>
+            {normalizeRunError(runError, t, locale).summary}
+          </Text>
+          <NativeActionButton
+            label={t("Details")}
+            prominence="quiet"
+            size="compact"
+            onPress={() => setSelectableText(runError)}
+          />
+        </View>
       ) : null}
       {/* The floor keeps a tall suggestion list from sliding under the transparent header. */}
       <View style={{ flex: 1, minHeight: headerHeight, position: "relative" }}>
@@ -2304,6 +2325,7 @@ function Thread({ sessionEpoch }: { sessionEpoch: number }) {
             ref={pinnedScroll}
             style={{ flex: 1 }}
             contentContainerStyle={{ paddingTop: headerHeight + 8, paddingBottom: 16 }}
+            keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
             maintainVisibleContentPosition={messageListPosition}
             scrollEventThrottle={16}
             onLayout={(event) => {
@@ -2367,6 +2389,8 @@ function Thread({ sessionEpoch }: { sessionEpoch: number }) {
             // This callback tracks every row input, including reply, reaction and highlight state.
             extraData={renderMessageRow}
             style={messageListStyles.list}
+            // Swiping down hides the keyboard; on iOS it follows the finger.
+            keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
             // Inverted, so the bottom padding is the visual top, clear of the transparent header.
             contentContainerStyle={listContentStyle}
             maintainVisibleContentPosition={messageListPosition}
@@ -2469,12 +2493,8 @@ function Thread({ sessionEpoch }: { sessionEpoch: number }) {
         <View pointerEvents="none" style={[styles.headerFade, { height: headerHeight + 24 }]} />
       ) : null}
       {/* Shrinks (the suggestion lists scroll) so the input and Send stay above the keyboard. */}
-      <View
-        style={{
-          display: readOnly ? "none" : "flex",
-          flexShrink: 1,
-          paddingBottom: keyboardVisible ? 12 : Math.max(insets.bottom + 12, 24),
-        }}
+      <Animated.View
+        style={[{ display: readOnly ? "none" : "flex", flexShrink: 1 }, composerKeyboardPadding]}
       >
         {/* Fades messages out above the composer, like the header fade. */}
         <View pointerEvents="none" style={styles.composerFade} />
@@ -2604,7 +2624,7 @@ function Thread({ sessionEpoch }: { sessionEpoch: number }) {
           startVoiceCall={startVoiceCall}
           onSlashAction={runSlashAction}
         />
-      </View>
+      </Animated.View>
       <Modal
         visible={botActionsOpen}
         transparent
@@ -2865,7 +2885,7 @@ type MessageRowProps = {
   activityColor?: string;
   activityStatus?: MobileBot["status"];
   inGroup: boolean;
-  windowWidth: number;
+  columnWidth: number;
   enableJump: boolean;
   index: number;
 };
@@ -2892,7 +2912,7 @@ const MessageRow = memo(function MessageRow({
   activityColor,
   activityStatus,
   inGroup,
-  windowWidth,
+  columnWidth,
   enableJump,
   index,
 }: MessageRowProps) {
@@ -3077,10 +3097,10 @@ const MessageRow = memo(function MessageRow({
             actions={menu}
             maxWidth={
               isCenteredAgentEvent(message.blocks)
-                ? windowWidth - 40
+                ? columnWidth - 40
                 : activityBotId
-                  ? windowWidth - 40 - (inGroup ? 28 : 36)
-                  : (windowWidth - 40) * 0.9
+                  ? columnWidth - 40 - (inGroup ? 28 : 36)
+                  : (columnWidth - 40) * 0.9
             }
             colorScheme={colorScheme}
             onAction={onMenuAction}
@@ -3210,6 +3230,19 @@ const MessageBubble = memo(function MessageBubble({
     (block): block is Extract<MessageBlock, { kind: "mcp_approval" }> =>
       block.kind === "mcp_approval",
   );
+  const undoBlock = message.blocks.find(
+    (block): block is Extract<MessageBlock, { kind: "ask" }> =>
+      block.kind === "ask" && Boolean(block.instructionUpdate?.undoVersionId),
+  );
+  if (undoBlock?.instructionUpdate?.undoVersionId) {
+    return (
+      <InstructionUndo
+        botId={undoBlock.instructionUpdate.botId}
+        versionId={undoBlock.instructionUpdate.undoVersionId}
+        instructions={undoBlock.instructionUpdate.after}
+      />
+    );
+  }
   const ask = message.blocks.find(
     (block): block is Extract<MessageBlock, { kind: "ask" }> =>
       block.kind === "ask" && !isApprovalAskBlock(block) && !block.actions?.length,
@@ -3536,58 +3569,71 @@ const MessageBubble = memo(function MessageBubble({
             paddingVertical: 14,
           }}
         >
-          {askBlock.text ? (
-            <Text
-              {...actionProps}
-              style={{ color: tokens.foreground, fontSize: 15.5, lineHeight: 23 }}
-            >
-              {askBlock.text}
-            </Text>
-          ) : null}
-          {askBlock.detail ? (
-            <Text
-              {...(askBlock.text ? {} : actionProps)}
-              style={{
-                color: tokens.mutedForeground,
-                marginTop: askBlock.text ? 8 : 0,
-                fontSize: 12.5,
-                fontFamily: "Menlo",
-                lineHeight: 20,
-              }}
-            >
-              {askBlock.detail}
-            </Text>
-          ) : null}
-          {askBlock.status === "answered" ? (
-            <Text
-              {...actionProps}
-              style={{
-                color: tokens.success,
-                marginTop: 12,
-                fontSize: 13.5,
-                fontWeight: "600",
-              }}
-            >
-              {formatApprovalAnswer(
-                askBlock.answer,
-                askBlock.actions,
-                isApprovalAskBlock(askBlock),
-              )}
-            </Text>
-          ) : canAnswer && onAnswer ? (
-            <AskActions
-              actions={askBlock.actions}
-              accessibilityActions={actionProps.accessibilityActions}
-              onAccessibilityAction={actionProps.onAccessibilityAction}
-              onAnswer={(answer) => onAnswer(message, answer)}
+          {askBlock.instructionUpdate?.undoVersionId ? (
+            <InstructionUndo
+              botId={askBlock.instructionUpdate.botId}
+              versionId={askBlock.instructionUpdate.undoVersionId}
+              instructions={askBlock.instructionUpdate.after}
             />
           ) : (
-            <Text
-              {...actionProps}
-              style={{ color: tokens.mutedForeground, marginTop: 12, fontSize: 13.5 }}
-            >
-              {t("No longer active")}
-            </Text>
+            <>
+              {askBlock.text ? (
+                <Text
+                  {...actionProps}
+                  style={{ color: tokens.foreground, fontSize: 15.5, lineHeight: 23 }}
+                >
+                  {askBlock.instructionUpdate ? t("Update instructions?") : askBlock.text}
+                </Text>
+              ) : null}
+              {askBlock.detail ? (
+                <Text
+                  {...(askBlock.text ? {} : actionProps)}
+                  style={{
+                    color: tokens.mutedForeground,
+                    marginTop: askBlock.text ? 8 : 0,
+                    fontSize: 12.5,
+                    fontFamily: "Menlo",
+                    lineHeight: 20,
+                  }}
+                >
+                  {askBlock.detail}
+                </Text>
+              ) : null}
+              {askBlock.status === "answered" ? (
+                <Text
+                  {...actionProps}
+                  style={{
+                    color: tokens.success,
+                    marginTop: 12,
+                    fontSize: 13.5,
+                    fontWeight: "600",
+                  }}
+                >
+                  {askBlock.instructionUpdate
+                    ? t(askBlock.answer === "deny" ? "Dismissed" : "Allowed once")
+                    : formatApprovalAnswer(
+                        askBlock.answer,
+                        askBlock.actions,
+                        isApprovalAskBlock(askBlock),
+                      )}
+                </Text>
+              ) : canAnswer && onAnswer ? (
+                <AskActions
+                  actions={askBlock.actions}
+                  instructions={askBlock.instructionUpdate?.after}
+                  accessibilityActions={actionProps.accessibilityActions}
+                  onAccessibilityAction={actionProps.onAccessibilityAction}
+                  onAnswer={(answer) => onAnswer(message, answer)}
+                />
+              ) : (
+                <Text
+                  {...actionProps}
+                  style={{ color: tokens.mutedForeground, marginTop: 12, fontSize: 13.5 }}
+                >
+                  {t("No longer active")}
+                </Text>
+              )}
+            </>
           )}
         </View>
         {appConnectBlocks.map((block, index) => (

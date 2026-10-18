@@ -260,6 +260,12 @@ export function createRuntimeContextPolicy(
       if (currentIndex < 0)
         currentIndex = messages.findLastIndex((message) => message.role === "user");
       if (currentIndex < 0) currentIndex = 0;
+      // Steering, follow-ups and finished shells arrive as user messages during the
+      // run. Give each its own exchange so it does not push older history out:
+      // a moved first message rewrites the provider's whole cached prefix.
+      const laterUserMessages = messages
+        .slice(currentIndex + 1)
+        .filter((message) => message.role === "user").length;
       let protectedIndexes = messages.flatMap((message, index) =>
         message.role === "system" || (index >= currentIndex && message.role === "user")
           ? [index]
@@ -408,7 +414,9 @@ export function createRuntimeContextPolicy(
         strategy,
         protectedIndexes,
         cacheWarmth: predictedCache,
-        recentExchanges: retainShortHistory || standaloneHistoryFallback ? messages.length : 8,
+        ...(retainShortHistory || standaloneHistoryFallback
+          ? { recentExchanges: messages.length }
+          : { recentExchanges: 8, midRunExchanges: laterUserMessages }),
       });
       const shortenedStructuredResults = selected.messages.filter((message) => {
         if (message.role !== "toolResult") return false;

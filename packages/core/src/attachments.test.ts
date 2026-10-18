@@ -14,6 +14,17 @@ import {
 } from "./attachments.js";
 
 describe("attachment helpers", () => {
+  it("enforces configured limits before and after base64 decoding", () => {
+    const limit = 1024 * 1024;
+    for (const size of [limit, limit + 1, limit + 3]) {
+      const payload = Buffer.alloc(size).toString("base64");
+      if (size === limit) expect(decodeAttachmentBase64(payload, limit).byteLength).toBe(limit);
+      else expect(() => decodeAttachmentBase64(payload, limit)).toThrow("1 MiB limit");
+    }
+    const larger = Buffer.alloc(11 * limit).toString("base64");
+    expect(decodeAttachmentBase64(larger, 12 * limit).byteLength).toBe(11 * limit);
+    expect(() => decodeAttachmentBase64(larger)).toThrow("10 MiB limit");
+  });
   it("accepts zip archives and rejects unsupported mime types and empty payloads", () => {
     expect(() => validateAttachmentMimeType("application/zip")).not.toThrow();
     expect(() => validateAttachmentMimeType("application/octet-stream")).toThrow(
@@ -112,6 +123,7 @@ describe("attachment helpers", () => {
         blocks: [{ kind: "text" as const, text: "routine time" }],
       },
     ];
+    expect(userTurnMessageForRun("messaging", "run-new", messages)).toEqual(messages[1]);
     expect(userTurnMessageForRun("routine", "run-new", messages)).toBeUndefined();
     expect(userTurnMessageForRun("user", "run-old", messages)).toEqual(messages[0]);
     expect(userTurnMessageForRun("user", "run-new", messages)).toEqual(messages[1]);
@@ -217,5 +229,32 @@ describe("peer message history", () => {
         { kind: "bot_message_sent", toBotId: "b_2", toBotName: "Analyst", text: "chart it" },
       ]),
     ).toBe("[to Analyst] chart it");
+  });
+});
+
+describe("ask history", () => {
+  it("shows an answered ask with the chosen label so a later turn does not ask again", () => {
+    const actions = [
+      { id: "choice-1", label: "Berlin" },
+      { id: "choice-2", label: "Paris" },
+    ];
+    expect(blocksToAgentHistoryText([{ kind: "ask", text: "Which city?", actions }])).toBe(
+      "Which city?",
+    );
+    expect(
+      blocksToAgentHistoryText([
+        { kind: "ask", text: "Which city?", actions, status: "answered", answer: "choice-2" },
+      ]),
+    ).toBe("Which city?\nAnswer: Paris");
+    expect(
+      blocksToAgentHistoryText([
+        { kind: "ask", text: "Which city?", status: "answered", answer: "Lisbon" },
+      ]),
+    ).toBe("Which city?\nAnswer: Lisbon");
+    expect(
+      blocksToAgentHistoryText([
+        { kind: "ask", text: "API key", input: "secret", status: "answered", answer: "" },
+      ]),
+    ).toBe("API key");
   });
 });

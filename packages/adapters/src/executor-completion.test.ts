@@ -7,7 +7,7 @@ import {
   DELEGATED_EMPTY_NOTICE,
   emptyDelegatedToolTurnShouldFail,
   isExactNoResponse,
-  LONG_WORK_PROGRESS_GUIDANCE,
+  longWorkProgressGuidance,
   mayOpenModelStream,
   NO_RESPONSE,
   ROUTINE_SILENT_REPLY_GUIDANCE,
@@ -496,9 +496,16 @@ describe("runReplyGuidance", () => {
 
   it("keeps progress guidance for user-triggered runs", () => {
     expect(runPromotesMidTurnNarration("user")).toBe(true);
-    expect(runReplyGuidance("user")).toBe(LONG_WORK_PROGRESS_GUIDANCE);
+    expect(runPromotesMidTurnNarration("messaging")).toBe(true);
+    expect(runReplyGuidance("user")).toBe(longWorkProgressGuidance());
     expect(runReplyGuidance("user")).toContain("message_user");
-    expect(runReplyGuidance("messaging")).toBe(LONG_WORK_PROGRESS_GUIDANCE);
+    expect(runReplyGuidance("messaging")).toBe(longWorkProgressGuidance());
+  });
+});
+
+describe("runPromotesMidTurnNarration", () => {
+  it("drops mid-turn narration in bot-to-bot runs", () => {
+    expect(runPromotesMidTurnNarration("bot_message")).toBe(false);
   });
 });
 
