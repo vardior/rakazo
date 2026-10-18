@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 const alert = vi.hoisted(() => vi.fn());
 
 const linking = vi.hoisted(() => ({
-  canOpenURL: vi.fn(async () => true),
+  canOpenURL: vi.fn(async () => false),
   openURL: vi.fn(async () => undefined),
 }));
 
@@ -368,7 +368,6 @@ describe("user message links", () => {
     // markers stay literal characters.
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     linking.openURL.mockClear();
-    linking.canOpenURL.mockClear();
     const longPress = vi.fn();
     const container = document.createElement("div");
     document.body.appendChild(container);
