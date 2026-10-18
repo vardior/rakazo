@@ -91,17 +91,47 @@ describePostgres("MCP secret env entered on the approval card (PostgreSQL)", () 
     await close();
   });
 
-  it("stores the value only in the server's encrypted credential", async () => {
-    const deps = {
-      prisma,
-      secrets,
-      events: { notify: async () => {} },
-      env: { webOrigin: "http://127.0.0.1:5173" },
-      dataDir: "/tmp/rakazo-mcp-secret-env-test",
-    } as unknown as RouterDeps;
-    const client = createRouterClient(createRouter(deps), { context: { actor } as never });
+  const client = () =>
+    createRouterClient(
+      createRouter({
+        prisma,
+        secrets,
+        events: { notify: async () => {} },
+        env: { webOrigin: "http://127.0.0.1:5173" },
+        dataDir: "/tmp/rakazo-mcp-secret-env-test",
+      } as unknown as RouterDeps),
+      { context: { actor } as never },
+    );
 
-    await client.mcp.assignments.approve({
+  it("leaves the credential untouched when the card was already dismissed", async () => {
+    await client().mcp.assignments.dismiss({ botId, serverId, threadId });
+    await expect(
+      client().mcp.assignments.approve({ botId, serverId, threadId, env: { RISEUP_PAT: token } }),
+    ).rejects.toThrow();
+    const server = await prisma.mcpServer.findUniqueOrThrow({ where: { id: serverId } });
+    expect(server.secretId).toBeNull();
+    expect(await prisma.secret.count({ where: { spaceId } })).toBe(0);
+    await prisma.message.updateMany({
+      where: { threadId },
+      data: {
+        blocks: [
+          {
+            kind: "mcp_approval",
+            name: "RiseUp",
+            serverId,
+            transport: "stdio",
+            endpoint: null,
+            needsOAuth: false,
+            secretEnv: ["RISEUP_PAT"],
+            status: "pending",
+          },
+        ],
+      },
+    });
+  });
+
+  it("stores the value only in the server's encrypted credential", async () => {
+    await client().mcp.assignments.approve({
       botId,
       serverId,
       threadId,
