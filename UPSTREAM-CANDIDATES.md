@@ -183,6 +183,8 @@ Scenarios S1–S9 are deterministic fixture drives of the real stack. Before = t
 | S11 an owner message during a routine is answered before the routine finishes | held until the routine ended (code-read) | 3/3, routine attempts yielded then completed |
 | S9 saving a memory note keeps the next run's prefix | first change at message 1 | 3/3 |
 
+After the upstream `b884f436` sync, fork `main` passes every scenario 3/3 except S9 in the full sequence (0/3), which passes 3/3 on its own. The window still advances one batch at a time (13); upstream #1450 stops mid-run nudges from counting as exchanges, which removed a rewrite inside S12 and moved the next batch boundary onto S9's two runs. The full sequence has the same number of prefix rewrites before and after the sync.
+
 ## 10. A chat reply to a pending takeover is folded into another message and the browser is lost
 
 **Description.** When a bot asks the user to take over the screen and the user answers in chat instead, the reply is merged into the run's continuation prompt, and the resumed run is built without browser tools because the computer is still marked as held for the takeover.
