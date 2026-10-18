@@ -354,6 +354,20 @@ describe("disabled builtins", () => {
   });
 });
 
+describe("add_mcp_server", () => {
+  it("refuses a stdio server the deployment cannot run", async () => {
+    const f = fixture({ name: "add_mcp_server", builtin: true });
+    f.setCalls([
+      {
+        args: { name: "Budget", transport: "stdio", command: "npx", args: ["-y", "pkg"] },
+        executionId: "call-1",
+      },
+    ]);
+    await f.run();
+    expect(f.results).toEqual([{ error: expect.stringContaining('cannot run "npx"') }]);
+  });
+});
+
 describe("connector read-only metadata and approval enforcement", () => {
   beforeEach(() => {
     reviewMock.mockReset();

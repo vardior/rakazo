@@ -2698,6 +2698,7 @@ export interface ExecutorDeps {
   secretHttp?: RemoteTransportDependencies;
   /** Allow RFC1918 / Docker-network MCP URLs when the deployment owner enabled the escape. */
   mcpAllowPrivateEndpoint?: boolean;
+  mcpStdioCommands?: readonly string[];
   /** Remote cloud coding agents. Null/omit means tools stay uninjected. */
   cloudAgent?: CloudAgentConnection | null;
   /** Optional Auto Review verifier. When omitted, the factory selects from env (llm | jev | scripted). */
@@ -5672,6 +5673,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
               return finish({
                 error:
                   "Invalid MCP server details. Required: name, transport (streamable_http|sse|stdio); endpoint for remote transports; command for stdio.",
+              });
+            }
+            if (parsed.command !== undefined && !deps.mcpStdioCommands?.includes(parsed.command)) {
+              return finish({
+                error: `This deployment cannot run "${parsed.command}" as a local MCP server. Ask the user for the server's remote HTTPS endpoint instead.`,
               });
             }
             if (parsed.endpoint) {
