@@ -9,7 +9,12 @@ import {
 } from "./cloudflare-ai-gateway.js";
 import { ThreadMessageSchema } from "./events.js";
 import { Id, MemoryScope, RunStatus, SandboxKind } from "./ids.js";
-import { McpHeadersSchema, McpRemoteEndpointSchema, McpTransportSchema } from "./mcp.js";
+import {
+  McpEnvNameSchema,
+  McpHeadersSchema,
+  McpRemoteEndpointSchema,
+  McpTransportSchema,
+} from "./mcp.js";
 import { RunTriggerSchema } from "./runs.js";
 
 export const ComputerModeSchema = z.enum(["team", "dedicated"]);
@@ -737,7 +742,7 @@ export const McpServerConfigInput = z.discriminatedUnion("transport", [
     command: z.string().min(1).max(512),
     args: z.array(z.string().max(2048)).max(64).default([]),
     env: z
-      .record(z.string().regex(/^[A-Z_][A-Z0-9_]*$/), z.string().max(4096))
+      .record(McpEnvNameSchema, z.string().max(4096))
       .superRefine((value, ctx) => {
         if (Object.keys(value).length > 32) {
           ctx.addIssue({ code: "custom", message: "At most 32 environment variables are allowed" });

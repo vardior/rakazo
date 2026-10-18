@@ -30,6 +30,7 @@ Checked for duplicates on 2026-10-13: no open or closed upstream issue covers th
 | 18 | Every model call carries every tool schema | design | reproduced | `fix/tool-search` 39bcc16e, 31128f7b | not filed |
 | 19 | A bot can register a stdio MCP server the deployment cannot run | bug | reproduced | `fix/reject-unrunnable-stdio-mcp` 8bec272f | not filed |
 | 20 | Android chat links whose verified app is hidden from Rakazo do nothing | bug | reproduced | `fix/open-links-without-canopenurl` 0000930a | not filed |
+| 21 | A stdio MCP server that needs a token can only get it pasted into chat | gap | reproduced | `fix/mcp-secret-env` 1e429e05, 58fa4680, 9b53e71c | not filed |
 
 ---
 
@@ -267,3 +268,15 @@ Scenarios S1–S9 are deterministic fixture drives of the real stack. Before = t
 **Actual.** The dialog closes and no intent is sent (logcat shows no `START u0` for the tap, while a link to another domain opens normally).
 
 **Fix.** `fix/open-links-without-canopenurl`: open the sanitized URL directly and ignore a rejection. The markdown tests now mock `canOpenURL` as false, so all five link tests fail if the gate returns. Root cause confirmed from device logcat; the fixed build has not yet run on a device. No user-facing copy.
+
+## 21. A stdio MCP server that needs a token can only get it pasted into chat
+
+**Description.** `add_mcp_server` takes stdio environment variables as literal values only, and the approval card has no input. A stdio server that needs an API token (for example `npx -y <package>` reading `<NAME>_PAT`) can only receive it if the user pastes the token into chat, where the model and the message history keep it. Bots tell the user the token will be "entered securely", but no such path exists.
+
+**Steps to reproduce.** With stdio MCP enabled and `npx` allowed, ask a bot to add a stdio MCP server that needs a token in an environment variable, and say you will enter the token yourself.
+
+**Expected.** The approval card asks for the token in a masked field; the value goes to the server's encrypted credential and never through the model.
+
+**Actual.** The card has only Approve and Not now; the server is created with no env and fails until the token is pasted into chat.
+
+**Fix.** `fix/mcp-secret-env`: `add_mcp_server` takes `secret_env` (names only); the card shows one masked field per name on web and mobile; `mcp.assignments.approve` accepts `env` and merges it into the encrypted credential inside the approval transaction. No new copy: each field's label is the variable name. A Postgres test drives the real approve route and checks the value appears only in the decrypted credential and that a dismissed card leaves it unchanged. Verified live on the fork deployment with a fake key: the server process got the value, and the database dump and logs had no copy of it. The first build's `autocomplete="off"` let Chrome autofill the saved login password into the field; `new-password` fixed it. The mobile card was only typechecked. Fork PR vardior/rakazo#1.

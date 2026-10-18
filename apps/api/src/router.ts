@@ -244,6 +244,7 @@ import {
   revertConnectedMcpApprovals,
 } from "./mcp-approval.js";
 import { buildMcpUpdateMaterial } from "./mcp-material.js";
+import { commitMcpSecretEnv, prepareMcpSecretEnv } from "./mcp-secret-env.js";
 import {
   disconnectMemoryProvider,
   persistMemoryProviderConfig,
@@ -4392,50 +4393,60 @@ export function createRouter(deps: RouterDeps) {
           return rows.map(mcpAssignmentDto);
         }),
         approve: authed.mcp.assignments.approve.handler(async ({ context, input }) => {
-          const row = await resolveMcpApprovalCards(
-            onboardingDeps,
-            context.actor,
-            {
-              botId: input.botId,
-              serverId: input.serverId,
-              status: "connected",
-              threadId: input.threadId,
-            },
-            async (tx, decision) => {
-              if (!decision.assign) throw new IsolationError();
-              const [bot, server] = await Promise.all([
-                tx.bot.findFirst({
-                  where: {
-                    id: input.botId,
-                    spaceId: context.actor.spaceId,
-                    userId: context.actor.userId,
-                  },
-                  select: { id: true },
-                }),
-                tx.mcpServer.findFirst({
-                  where: {
-                    id: input.serverId,
-                    spaceId: context.actor.spaceId,
-                    userId: context.actor.userId,
-                    enabled: true,
-                  },
-                  select: { id: true },
-                }),
-              ]);
-              if (!bot || !server) throw new IsolationError();
-              return tx.botMcpServer.upsert({
-                where: { botId_serverId: { botId: bot.id, serverId: server.id } },
-                create: {
-                  spaceId: context.actor.spaceId,
-                  userId: context.actor.userId,
-                  botId: bot.id,
-                  serverId: server.id,
-                  allowAllTools: true,
-                  allowedTools: [],
+          const secretEnv = input.env
+            ? await prepareMcpSecretEnv(deps, context.actor, input.serverId, input.env)
+            : undefined;
+          const row = await persistPreparedSecret(
+            deps.prisma,
+            deps.secrets,
+            secretEnv?.stored,
+            () =>
+              resolveMcpApprovalCards(
+                onboardingDeps,
+                context.actor,
+                {
+                  botId: input.botId,
+                  serverId: input.serverId,
+                  status: "connected",
+                  threadId: input.threadId,
                 },
-                update: {},
-              });
-            },
+                async (tx, decision) => {
+                  if (!decision.assign) throw new IsolationError();
+                  const [bot, server] = await Promise.all([
+                    tx.bot.findFirst({
+                      where: {
+                        id: input.botId,
+                        spaceId: context.actor.spaceId,
+                        userId: context.actor.userId,
+                      },
+                      select: { id: true },
+                    }),
+                    tx.mcpServer.findFirst({
+                      where: {
+                        id: input.serverId,
+                        spaceId: context.actor.spaceId,
+                        userId: context.actor.userId,
+                        enabled: true,
+                      },
+                      select: { id: true },
+                    }),
+                  ]);
+                  if (!bot || !server) throw new IsolationError();
+                  if (secretEnv) await commitMcpSecretEnv(tx, context.actor, secretEnv);
+                  return tx.botMcpServer.upsert({
+                    where: { botId_serverId: { botId: bot.id, serverId: server.id } },
+                    create: {
+                      spaceId: context.actor.spaceId,
+                      userId: context.actor.userId,
+                      botId: bot.id,
+                      serverId: server.id,
+                      allowAllTools: true,
+                      allowedTools: [],
+                    },
+                    update: {},
+                  });
+                },
+              ),
           );
           if (!row) throw new IsolationError();
           return mcpAssignmentDto(row);

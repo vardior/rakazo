@@ -555,7 +555,7 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "add_mcp_server",
     description:
-      "Connect an MCP tool server to this Space when the user asks you to add one and provides the details (URL or command, optional token/headers/env). The server is created immediately and assigned to you. If it needs browser OAuth authorization, an approval card appears in the chat for the user to complete — tell them to click Authorize. Do not invent endpoints; only use details the user provided.",
+      "Connect an MCP tool server to this Space when the user asks you to add one and provides the details (URL or command, optional token/headers/env). The server is created immediately and assigned to you. If it needs browser OAuth authorization, an approval card appears in the chat for the user to complete — tell them to click Authorize. Never ask the user to paste a token or key into chat: list the environment variables that need one in secret_env and the user enters their values in the approval card. Do not invent endpoints; only use details the user provided.",
     inputSchema: {
       type: "object",
       properties: {
@@ -583,7 +583,14 @@ export const builtinAgentTools: ConnectorTool[] = [
         },
         env: {
           type: "object",
-          description: 'Environment variables for stdio transport, e.g. {"API_KEY": "..."}.',
+          description:
+            'Non-secret environment variables for stdio transport, e.g. {"REGION": "us"}.',
+        },
+        secret_env: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            'Names of stdio environment variables whose secret values the user enters in the approval card, e.g. ["API_KEY"].',
         },
         headers: {
           type: "object",

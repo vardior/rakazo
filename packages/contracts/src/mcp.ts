@@ -36,3 +36,12 @@ export const McpHeadersSchema = z
       ctx.addIssue({ code: "custom", message: "At most 32 headers are allowed" });
     }
   });
+
+export const McpEnvNameSchema = z.string().regex(/^[A-Z_][A-Z0-9_]*$/);
+
+export const McpSecretEnvValuesSchema = z
+  .record(McpEnvNameSchema, z.string().min(1).max(4096))
+  .refine(
+    (value) => Object.keys(value).length <= 32,
+    "At most 32 environment variables are allowed",
+  );
